@@ -1,8 +1,16 @@
 # DouYin Spark Flow
 
-## 简单介绍
+![Python](https://img.shields.io/badge/Python-3.8%2B-blue?logo=python)
+![Playwright](https://img.shields.io/badge/Playwright-%E2%9C%94-green?logo=playwright)
+![chrome-headless-shell](https://img.shields.io/badge/chrome--headless--shell-%E2%9C%94-brightgreen?logo=googlechrome)
 
-> 抖音自动续火花脚本
+## 📌 简单介绍
+
+**抖音火花自动续火脚本**一款轻量实用的抖音互动脚本，可自动为你和抖音好友续火花，无需手动操作。
+
+✅ 支持 GitHub Actions 自动运行（开箱即用的 Workflow 配置）
+
+✅ 也可部署至自有服务器，灵活适配个人使用场景
 
 ### 特性
 
@@ -12,7 +20,7 @@
 
 使用`PlayWright`以及`chrome-headless-shell`自动化操作[抖音创作者中心](https://creator.douyin.com/)，进行定时发送抖音消息来续火花
 
-## 使用方法
+## 🚀 使用方法
 
 ### 1. 克隆项目到本地，并完成环境配置
 
@@ -39,7 +47,7 @@ cp usersData.example.json usersData.json
 |-----|-----|-----|
 |multiTask|是否启用多任务，登录多个账户后生效，启用后同时操作多个账户的任务加快执行速度|`true` `false`|
 |taskCount|最大同时操作的账户数目，需要先启用multiTask|int，默认`5`|
-|messageTemplate|发送消息的模板，可以从聊天框编辑好个时候复制|使用`[API]`引用每日一言内容 默认值为： `[盖瑞]今日火花[加一]\n—— [右边] 每日一言 [左边] ——\n[API]`|
+|messageTemplate|发送消息的模板，可以从抖音聊天框编辑好后直接复制过来，这样可以拿到简单表情的代码，例如`[盖瑞]`|使用`[API]`引用每日一言内容 默认值为： `[盖瑞]今日火花[加一]\n—— [右边] 每日一言 [左边] ——\n[API]`|
 |hitokotoTypes|每日一言消息允许的类型|可以留空使用所有类型`[]`,全部可选类型的列表为：`["动画","漫画","游戏","文学","原创","来自网络","影视","诗词","哲学","抖机灵","其他"]`|
 
 ### 5. 测试运行
@@ -64,7 +72,7 @@ cp usersData.example.json usersData.json
 
 ![手动测试](docs/images/屏幕截图%202026-02-14%20224614.png)
 
-## 问题解答
+## 💬 问题解答
 
 1. 首次**克隆仓库**后启用Action
 
@@ -95,3 +103,15 @@ To reduce unnecessary workflow runs, scheduled workflows have been disabled in t
     建议：如果你长期需要定时任务，定期（如每月）做一次无关紧要的提交，防止被自动禁用。
 
     > 补充，我在仓库中尝试引入了`liskin/gh-workflow-keepalive`，理论上在此之后复刻仓库的或者进行同步后的仓库不需要再手动保活，具体详见action的`workflow-keepalive` Job
+
+## ⚠️ 免责声明
+
+1. 本项目为**开源学习用途**，仅用于技术研究和个人自用，严禁用于商业用途、恶意刷量或违反抖音平台规则的行为。
+2. 使用本脚本产生的一切风险（包括但不限于抖音账号限流、封禁、处罚等）均由使用者自行承担，项目开发者不承担任何责任。
+3. 本项目仅调用公开的接口/模拟人工操作，不涉及破解、入侵抖音系统，使用者需遵守《抖音用户服务协议》及相关法律法规。
+4. 请合理控制脚本运行频率，避免给抖音平台服务器造成压力，建议仅用于个人少量好友的火花维系。
+5. 若你使用本项目即表示已阅读并同意本免责声明，如不同意请立即停止使用。
+
+## 📄 开源协议
+
+本项目基于 MIT 协议开源，你可以自由使用、修改和分发本项目代码，详见 [LICENSE](LICENSE) 文件。
