@@ -10,7 +10,7 @@ from pathlib import Path
 from flask import Flask, jsonify, request, Response
 from playwright.sync_api import sync_playwright
 
-APP_VERSION = 'Dy0.0.3.1'
+APP_VERSION = 'Dy0.0.4'
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / 'data'
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -217,6 +217,16 @@ def update_background():
                 return
 
         code = run_cmd(f, [py, '-m', 'pip', 'install', 'flask'])
+        if code != 0:
+            UPDATE_STATE['running'] = False
+            UPDATE_STATE['finished_at'] = now_ts()
+            UPDATE_STATE['exit_code'] = code
+            return
+
+        code = run_cmd(f, [py, '-m', 'playwright', 'install', 'chromium', '--only-shell'])
+        if code != 0:
+            # 兼容旧版本 Playwright 或不支持 only-shell 的环境
+            code = run_cmd(f, [py, '-m', 'playwright', 'install', 'chromium'])
 
         ts2 = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
         f.write(f'\\n[{ts2}] === 更新完成 exit_code={code} ===\\n')
@@ -232,18 +242,116 @@ def sanitize_cookies(cookies):
     for c in cookies:
         if not isinstance(c, dict):
             continue
+
+        name = str(c.get('name', '')).strip()
+        value = c.get('value', None)
+        if not name or value is None:
+            continue
+
         x = dict(c)
-        x.pop('sameSite', None)
-        if x.get('expires') in ('', None):
+        x['name'] = name
+        x['value'] = str(value)
+
+        # Playwright 仅接受 Lax / Strict / None（大小写敏感）
+        same_site = x.get('sameSite')
+        if isinstance(same_site, str):
+            s = same_site.strip().lower()
+            if s in ('lax', 'strict', 'none'):
+                x['sameSite'] = s.capitalize()
+            else:
+                x.pop('sameSite', None)
+
+        # expires 允许 float 秒时间戳，空值/无效值直接移除
+        exp = x.get('expires', None)
+        if exp in ('', None):
             x.pop('expires', None)
+        else:
+            try:
+                x['expires'] = float(exp)
+            except Exception:
+                x.pop('expires', None)
+
+        # 若既没有 domain 也没有 url，兜底到 douyin 域
+        domain = str(x.get('domain', '') or '').strip()
+        url = str(x.get('url', '') or '').strip()
+        if not domain and not url:
+            x['domain'] = '.douyin.com'
+        elif domain:
+            x['domain'] = domain if domain.startswith('.') else ('.' + domain.lstrip('.'))
+
+        x['path'] = str(x.get('path', '/') or '/')
         out.append(x)
     return out
 
 
+def parse_cookies_input(cookies_raw: str):
+    text = str(cookies_raw or '').strip()
+    if not text:
+        raise ValueError('cookies 不能为空')
+
+    # 1) JSON 输入：支持数组，或包含 cookies/data 数组的对象
+    if text[:1] in ('[', '{'):
+        try:
+            data = json.loads(text)
+        except Exception as e:
+            raise ValueError(f'cookies_json 解析失败：{e}')
+
+        if isinstance(data, list):
+            cookies = data
+        elif isinstance(data, dict):
+            if isinstance(data.get('cookies'), list):
+                cookies = data.get('cookies')
+            elif isinstance(data.get('data'), list):
+                cookies = data.get('data')
+            else:
+                raise ValueError('JSON 对象中未找到 cookies 数组（支持字段：cookies / data）')
+        else:
+            raise ValueError('cookies_json 必须是 JSON 数组，或包含 cookies/data 数组的 JSON 对象')
+
+        normalized = sanitize_cookies(cookies)
+        if not normalized:
+            raise ValueError('未解析到可用 cookie，请检查 name/value 字段')
+        return normalized
+
+    # 2) 纯 Cookie Header 字符串：name=value; name2=value2
+    items = []
+    for seg in text.split(';'):
+        seg = seg.strip()
+        if not seg or '=' not in seg:
+            continue
+        name, value = seg.split('=', 1)
+        name = name.strip()
+        value = value.strip()
+        if not name:
+            continue
+        items.append({'name': name, 'value': value, 'domain': '.douyin.com', 'path': '/'})
+
+    normalized = sanitize_cookies(items)
+    if not normalized:
+        raise ValueError('无法从字符串解析 cookie。请粘贴 JSON 数组，或标准 Cookie 字符串（name=value; ...）')
+    return normalized
+
+
+def ensure_playwright_chromium():
+    py = get_python_bin()
+    attempts = [
+        [py, '-m', 'playwright', 'install', 'chromium', '--with-deps', '--only-shell'],
+        [py, '-m', 'playwright', 'install', 'chromium', '--only-shell'],
+        [py, '-m', 'playwright', 'install', 'chromium'],
+    ]
+
+    last_code = None
+    for cmd in attempts:
+        p = subprocess.run(cmd, cwd=str(BASE_DIR), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        last_code = p.returncode
+        if p.returncode == 0:
+            return
+
+    raise RuntimeError(f'Playwright 浏览器安装失败（exit_code={last_code}），请稍后重试或检查网络/系统依赖')
+
+
 def fetch_friends_by_cookies(cookies_json: str, timeout_ms: int = 90000):
-    cookies = json.loads(cookies_json)
-    if not isinstance(cookies, list):
-        raise ValueError('cookies_json 必须是 JSON 数组')
+    cookies = parse_cookies_input(cookies_json)
 
     users = {}
 
@@ -269,9 +377,17 @@ def fetch_friends_by_cookies(cookies_json: str, timeout_ms: int = 90000):
             pass
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage'])
+        try:
+            browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage'])
+        except Exception as e:
+            if "Executable doesn't exist" in str(e) or 'Please run the following command' in str(e):
+                ensure_playwright_chromium()
+                browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage'])
+            else:
+                raise
+
         context = browser.new_context()
-        context.add_cookies(sanitize_cookies(cookies))
+        context.add_cookies(cookies)
         page = context.new_page()
         page.on('response', on_response)
 
@@ -555,9 +671,9 @@ def api_set_config():
         cookies_json = str(a.get('cookies_json', '')).strip()
         if uid and cookies_json:
             try:
-                json.loads(cookies_json)
+                parse_cookies_input(cookies_json)
             except Exception as e:
-                return jsonify({'ok': False, 'error': f'第{i}个账号 cookies_json 不是合法JSON: {e}'})
+                return jsonify({'ok': False, 'error': f'第{i}个账号 cookies 配置不可用: {e}'})
 
     save_config(cfg)
     return jsonify({'ok': True})
