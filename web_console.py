@@ -10,7 +10,7 @@ from pathlib import Path
 from flask import Flask, jsonify, request, Response
 from playwright.sync_api import sync_playwright
 
-APP_VERSION = 'Dy0.0.3'
+APP_VERSION = 'Dy0.0.3.1'
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / 'data'
 DATA_DIR.mkdir(parents=True, exist_ok=True)
