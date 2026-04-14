@@ -1,5 +1,11 @@
 # 更新日志
 
+## Dy0.0.3.1 - 2026-04-14
+
+### 修复
+- 修复主页模板中 JS 对象转义遗漏导致的 `Internal Server Error`。
+- 问题表现：访问 `/` 时 Flask 在 f-string 渲染阶段抛出 `NameError: username is not defined`。
+
 ## Dy0.0.3 - 2026-04-14
 
 ### 新增

@@ -405,12 +405,12 @@ function addAccount(a){{
 }}
 
 function readAccounts(){{
-  return Array.from(document.querySelectorAll('.acc')).map(el => ({
+  return Array.from(document.querySelectorAll('.acc')).map(el => ({{
     username: el.querySelector('.username').value.trim(),
     unique_id: el.querySelector('.unique_id').value.trim(),
     targets: el.querySelector('.targets').value.split(',').map(x=>x.trim()).filter(Boolean),
     cookies_json: el.querySelector('.cookies_json').value.trim(),
-  }));
+  }}));
 }}
 
 async function fetchFriends(btn){{
