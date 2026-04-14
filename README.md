@@ -1,88 +1,211 @@
-# DouYin Spark Flow
+# DouYinSparkFlow（超详细小白教程）
 
-![cover](docs/images/cover.png)
+> 这是一个用于“抖音火花续火”的自动化工具。  
+> 你可以用 **Web 控制台** 配置账号、目标好友，然后一键运行任务。
 
-![Python](https://img.shields.io/badge/Python-3.8%2B-blue?logo=python)
-![Playwright](https://img.shields.io/badge/Playwright-%E2%9C%94-green?logo=playwright)
-![chrome-headless-shell](https://img.shields.io/badge/chrome--headless--shell-%E2%9C%94-brightgreen?logo=googlechrome)
+---
 
-> `dev`分支迁移到`https://www.douyin.com/chat` 加载更稳定，支持通过备注/昵称/抖音号等多种方式智能匹配。由于`https://www.douyin.com/chat`没经过长期测试，该分支目前暂不合并。有能力的可以研究一下
+## 0. 这个项目能做什么？
 
-## 贡献者
+- 自动给抖音好友发消息，维持火花
+- 支持多账号、多目标好友
+- 支持可视化配置（Web 控制台）
+- 支持在线更新脚本（控制台里点按钮）
 
-感谢所有为本项目做出贡献的开发者：
+---
 
-[![contributors](https://contrib.rocks/image?repo=2061360308/DouYinSparkFlow)](https://github.com/2061360308/DouYinSparkFlow/graphs/contributors)
+## 1. 小白先看：你需要准备什么
 
-## 📌 项目介绍
+最少准备 4 样：
 
-**抖音火花自动续火脚本**一款轻量实用的抖音互动脚本，可自动为你和抖音好友续火花，无需手动操作。
+1. 一台能联网的 Linux 服务器（推荐 Ubuntu 22/24）
+2. Python 3.8+（建议 3.10+）
+3. 抖音账号 cookie（JSON 数组格式）
+4. 目标好友（昵称或 short_id）
 
-✅ 支持 GitHub Actions 自动运行（开箱即用的 Workflow 配置）
+---
 
-✅ 也可源码部署至自有服务器，青龙/白虎等任务管理面板，灵活适配个人使用场景
+## 2. 下载项目
 
-### 特性/优势
+### 方式 A（推荐）：克隆仓库
 
-- [x] 在线可视化配置工具，新手也能入门操作
-- [x] Fork即用，无需克隆代码，配置运行环境
-- [x] 多用户,同时批量支持多个账户
-- [x] 多目标,一个账户支持多个续火花目标
-- [x] 支持按照昵称和抖音号两种方式查找好友目标
-- [x] 一言支持,更丰富的消息文本
+```bash
+git clone https://github.com/MeowAndy/DouYinSparkFlow.git
+cd DouYinSparkFlow
+```
 
-使用`PlayWright`以及`chrome-headless-shell`自动化操作[抖音创作者中心](https://creator.douyin.com/)，进行定时发送抖音消息来续火花
+### 方式 B：下载 ZIP
 
-## 🌐 Web 控制台（新增）
+- 打开仓库页面下载 ZIP
+- 解压后进入目录
 
-本仓库新增了一个轻量 Web 控制台：`web_console.py`（Dy0.0.1）
+---
 
-### 启动
+## 3. 安装依赖（一步步）
+
+> 以下命令在项目目录执行。
+
+### 3.1 创建虚拟环境
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+### 3.2 升级 pip
+
+```bash
+python -m pip install -U pip
+```
+
+### 3.3 安装依赖
+
+```bash
+pip install -r requirements.txt
+pip install flask
+```
+
+> 如果 requirements.txt 编码异常（极少数机器），可以用控制台的“更新脚本”自动处理。
+
+---
+
+## 4. 启动 Web 控制台（重点）
 
 ```bash
 python web_console.py
 ```
 
-默认访问：`http://127.0.0.1:8091`
+默认地址：
 
-### 能力
+- 本机：`http://127.0.0.1:8091`
+- 远程：`http://你的服务器IP:8091`
 
-- 在线编辑核心配置（代理、消息模板、一言分类、匹配模式、超时重试）
-- 在线配置多账号任务（`username / unique_id / targets / cookies_json`）
-- 一键运行任务 + 实时日志查看
+---
 
-> 详细变更见 [CHANGELOG.md](CHANGELOG.md)
+## 5. 控制台怎么填（最重要）
 
-## 🚀 使用方法
+页面里分 2 部分：
 
-**材料准备：** 一个 GitHub 账号和可用浏览器即可，不设额外门槛。
+## A) 全局配置
 
-**编辑项目配置：** 保姆级教程见 [配置生成器使用](docs/配置生成器使用.md)
+- **proxy_address**：代理地址（可空）
+- **match_mode**：匹配模式
+  - `nickname`：targets 填好友昵称（推荐新手）
+  - `short_id`：targets 填好友抖音号 short_id
+- **browser_timeout**：浏览器超时（毫秒）
+- **friend_list_wait_time**：好友列表等待时间（毫秒）
+- **task_retry_times**：重试次数
+- **log_level**：日志级别（DEBUG/INFO）
+- **hitokoto_types**：一言类型 JSON 数组
+- **message_template**：发送消息模板
 
-**部署方法：**
+## B) 账号任务（一个账号一块）
 
-1. Github Action 部署（推荐👍），操作说明见 [Action部署说明](docs/Action部署说明.md)
+每个账号至少填：
 
-2. 源码部署 （更适合高级用户），操作说明见[源代码部署说明](docs/源代码部署说明.md)
+- **username**：备注名（随便填，便于区分）
+- **unique_id**：唯一标识（不能重复）
+- **cookies_json**：该账号 cookie 的 JSON 数组
+- **targets**：目标好友列表（英文逗号分隔）
 
-## 📢交流讨论
+### 推荐流程（避免出错）
 
-已开放讨论区，有疑问或展示相关成果，发布话题需求的可以加入讨论
+1. 先填 `username / unique_id / cookies_json`
+2. 点击 **自动拉取好友昵称+ID**
+3. 再点：
+   - **填入targets(昵称)**（如果你 match_mode=nickname）
+   - **填入targets(ID)**（如果你 match_mode=short_id）
+4. 点击 **保存配置**
+5. 点击 **立即运行**
 
-[跳转讨论区](https://github.com/2061360308/DouYinSparkFlow/discussions)
+---
 
-## ⭐Star 趋势
+## 6. cookies_json 从哪来？
 
-[![Star History Chart](https://api.star-history.com/svg?repos=2061360308/DouYinSparkFlow&type=Date)](https://www.star-history.com/#2061360308/DouYinSparkFlow&Date)
+你需要的是 **JSON 数组 cookies**，不是单行 `name=value;...` 字符串。
 
-## ⚠️ 免责声明
+常见方式：
 
-1. 本项目为**开源学习用途**，仅用于技术研究和个人自用，严禁用于商业用途、恶意刷量或违反抖音平台规则的行为。
-2. 使用本脚本产生的一切风险（包括但不限于抖音账号限流、封禁、处罚等）均由使用者自行承担，项目开发者不承担任何责任。
-3. 本项目仅调用公开的接口/模拟人工操作，不涉及破解、入侵抖音系统，使用者需遵守《抖音用户服务协议》及相关法律法规。
-4. 请合理控制脚本运行频率，避免给抖音平台服务器造成压力，建议仅用于个人少量好友的火花维系。
-5. 若你使用本项目即表示已阅读并同意本免责声明，如不同意请立即停止使用。
+- 浏览器开发者工具导出 cookies（JSON）
+- 你现有脚本里已存的 cookie JSON
 
-## 📄 开源协议
+格式示例（简化）：
 
-本项目基于 MIT 协议开源，你可以自由使用、修改和分发本项目代码，详见 [LICENSE](LICENSE) 文件。
+```json
+[
+  {
+    "name": "sessionid",
+    "value": "xxxx",
+    "domain": ".douyin.com",
+    "path": "/"
+  }
+]
+```
+
+---
+
+## 7. 如何运行与看结果
+
+### 运行
+
+- 点控制台里的 **立即运行**
+
+### 看结果
+
+- 左侧“运行日志”里会实时输出执行情况
+- 有报错就按日志关键字排查（cookie失效、目标不存在、页面超时等）
+
+---
+
+## 8. 更新脚本怎么用
+
+控制台有 **更新脚本** 按钮，点击会自动执行：
+
+- `git fetch origin`
+- `git reset --hard origin/main`
+- 依赖安装
+
+更新进度看右侧“更新日志”。
+
+> 注意：如果更新包含 `web_console.py` 变更，建议重启控制台进程。
+
+---
+
+## 9. 常见问题（FAQ）
+
+### Q1：打开控制台报 500 / Internal Server Error
+- 先点更新脚本
+- 或手动 `git pull` 后重启 `web_console.py`
+
+### Q2：自动拉取好友为空
+- 先检查 cookies 是否有效
+- 检查账号是否能正常打开抖音创作者消息页
+
+### Q3：targets 填昵称还是 ID？
+- `match_mode=nickname` → 填昵称
+- `match_mode=short_id` → 填 short_id
+
+### Q4：多账号怎么配？
+- 每个账号新增一个“账号任务卡片”
+- `unique_id` 必须不同
+
+---
+
+## 10. 推荐部署方式
+
+- 先在测试账号上验证
+- 单账号跑通后再加多账号
+- 生产环境建议用 `tmux` 或 `systemd` 守护进程
+
+---
+
+## 11. 更新日志
+
+- 查看完整变更：[`CHANGELOG.md`](./CHANGELOG.md)
+- 当前 Web 控制台版本请以页面右上角徽标为准
+
+---
+
+## 12. 免责声明
+
+本项目仅供学习与个人研究，请遵守抖音平台规则与当地法律法规。使用风险自负。
