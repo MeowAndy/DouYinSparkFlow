@@ -2,15 +2,15 @@
 # -*- coding: utf-8 -*-
 
 import json
-import os
 import subprocess
 import threading
 import time
 from pathlib import Path
 
 from flask import Flask, jsonify, request, Response
+from playwright.sync_api import sync_playwright
 
-APP_VERSION = 'Dy0.0.2'
+APP_VERSION = 'Dy0.0.3'
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / 'data'
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -49,7 +49,7 @@ def default_config():
         'friend_list_wait_time': 2000,
         'task_retry_times': 3,
         'log_level': 'DEBUG',
-        'accounts': [],  # [{username, unique_id, targets:[...], cookies_json}]
+        'accounts': [],
     }
 
 
@@ -73,8 +73,13 @@ def save_config(cfg):
     CONFIG_FILE.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding='utf-8')
 
 
+def get_python_bin():
+    py = str((BASE_DIR / '.venv' / 'bin' / 'python').resolve())
+    return py if Path(py).exists() else 'python3'
+
+
 def build_env_from_config(cfg):
-    env = os.environ.copy()
+    env = dict(**__import__('os').environ)
 
     accounts = cfg.get('accounts', [])
     tasks = []
@@ -92,7 +97,6 @@ def build_env_from_config(cfg):
         if not cookies_json:
             continue
 
-        # 校验 cookie JSON 合法
         json.loads(cookies_json)
 
         tasks.append({'username': username, 'unique_id': uid, 'targets': targets})
@@ -108,11 +112,6 @@ def build_env_from_config(cfg):
     env['TASK_RETRY_TIMES'] = str(cfg.get('task_retry_times', 3))
     env['LOG_LEVEL'] = str(cfg.get('log_level', 'DEBUG'))
     return env
-
-
-def get_python_bin():
-    py = str((BASE_DIR / '.venv' / 'bin' / 'python').resolve())
-    return py if Path(py).exists() else 'python3'
 
 
 def run_main_background():
@@ -206,10 +205,8 @@ def update_background():
             UPDATE_STATE['exit_code'] = code
             return
 
-        # 先升级 pip
         run_cmd(f, [py, '-m', 'pip', 'install', '-U', 'pip'])
 
-        # 安装 requirements（兼容 UTF16 编码文件）
         clean = clean_requirements_file()
         if clean and clean.exists():
             code = run_cmd(f, [py, '-m', 'pip', 'install', '-r', str(clean)])
@@ -219,16 +216,96 @@ def update_background():
                 UPDATE_STATE['exit_code'] = code
                 return
 
-        # 兜底确保控制台依赖
         code = run_cmd(f, [py, '-m', 'pip', 'install', 'flask'])
 
         ts2 = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
         f.write(f'\\n[{ts2}] === 更新完成 exit_code={code} ===\\n')
-        f.write('提示：若更新涉及 web_console.py 代码，请手动重启 dyflow tmux 会话使新代码生效。\\n')
+        f.write('提示：若更新涉及 web_console.py，请重启 tmux dyflow 会话生效。\\n')
 
     UPDATE_STATE['running'] = False
     UPDATE_STATE['finished_at'] = now_ts()
     UPDATE_STATE['exit_code'] = code
+
+
+def sanitize_cookies(cookies):
+    out = []
+    for c in cookies:
+        if not isinstance(c, dict):
+            continue
+        x = dict(c)
+        x.pop('sameSite', None)
+        if x.get('expires') in ('', None):
+            x.pop('expires', None)
+        out.append(x)
+    return out
+
+
+def fetch_friends_by_cookies(cookies_json: str, timeout_ms: int = 90000):
+    cookies = json.loads(cookies_json)
+    if not isinstance(cookies, list):
+        raise ValueError('cookies_json 必须是 JSON 数组')
+
+    users = {}
+
+    def on_response(resp):
+        if 'aweme/v1/creator/im/user_detail/' not in resp.url:
+            return
+        try:
+            data = resp.json()
+            for item in data.get('user_list', []) or []:
+                user = item.get('user', {}) or {}
+                nickname = str(user.get('nickname', '')).strip()
+                short_id = str(user.get('ShortId', '')).strip()
+                user_id = str(item.get('user_id', '')).strip()
+                key = short_id or user_id or nickname
+                if not key:
+                    continue
+                users[key] = {
+                    'nickname': nickname,
+                    'short_id': short_id,
+                    'user_id': user_id,
+                }
+        except Exception:
+            pass
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage'])
+        context = browser.new_context()
+        context.add_cookies(sanitize_cookies(cookies))
+        page = context.new_page()
+        page.on('response', on_response)
+
+        page.goto('https://creator.douyin.com/', timeout=timeout_ms)
+        page.goto('https://creator.douyin.com/creator-micro/data/following/chat', timeout=timeout_ms)
+
+        # 尝试点击“好友”标签并滚动列表，触发更多 user_detail 接口
+        try:
+            friends_tab_selector = 'xpath=//*[@id="sub-app"]/div/div/div[1]/div[2]'
+            page.wait_for_selector(friends_tab_selector, timeout=20000)
+            page.locator(friends_tab_selector).click()
+        except Exception:
+            pass
+
+        time.sleep(1.5)
+
+        scrollable_selector = 'xpath=//*[@id="sub-app"]/div/div[1]/div[2]/div[2]/div/div/div[3]/div/div/div/ul/div'
+        for _ in range(16):
+            try:
+                handle = page.locator(scrollable_selector).element_handle()
+                if not handle:
+                    break
+                page.evaluate('(el) => { el.scrollTop += 900; }', handle)
+                time.sleep(0.8)
+            except Exception:
+                time.sleep(0.5)
+
+        time.sleep(1.2)
+        context.close()
+        browser.close()
+
+    items = list(users.values())
+    items.sort(key=lambda x: (x.get('nickname') or '', x.get('short_id') or ''))
+    return items
 
 
 @app.after_request
@@ -258,13 +335,12 @@ pre{{background:#111;color:#eee;padding:12px;border-radius:8px;white-space:pre-w
 <div class='card'>
   <b>新手填写说明（先看这个）</b>
   <ol>
-    <li>先在下方「账号任务」里新增账号，至少填：<code>unique_id</code>、<code>targets</code>、<code>cookies_json</code></li>
-    <li><code>targets</code> 多个值用英文逗号分隔，例如：<code>小明,小红</code></li>
-    <li><code>cookies_json</code> 要填 JSON 数组（通常来自浏览器导出的 cookies）</li>
+    <li>先新增账号，至少填：<code>unique_id</code>、<code>cookies_json</code></li>
+    <li>可点“自动拉取好友昵称+ID”从当前账号会话获取好友列表</li>
+    <li>再点击“填入targets(昵称)”或“填入targets(ID)”</li>
     <li>点「保存配置」后，再点「立即运行」</li>
-    <li>在运行日志中看结果</li>
   </ol>
-  <div class='small'>match_mode=nickname 时按昵称匹配；match_mode=short_id 时按抖音号匹配。</div>
+  <div class='small'>match_mode=nickname 用昵称匹配；match_mode=short_id 用抖音号(ShortId)匹配。</div>
 </div>
 
 <div class='card'>
@@ -293,7 +369,6 @@ pre{{background:#111;color:#eee;padding:12px;border-radius:8px;white-space:pre-w
   <button onclick='reloadCfg()'>刷新配置</button>
   <button onclick='startUpdate()'>更新脚本</button>
   <span id='msg'></span>
-  <div class='small'>更新脚本会执行：<code>git reset --hard origin/main</code> + 安装依赖。若 web 控制台代码有更新，请手动重启 tmux 会话生效。</div>
 </div>
 
 <div class='grid'>
@@ -316,8 +391,12 @@ function accRow(a={{username:'',unique_id:'',targets:[],cookies_json:''}}){{
     <label>账号备注(username)</label><input class='username' value='${{esc(a.username)}}' placeholder='例如：主号A' />
     <label>唯一ID(unique_id)</label><input class='unique_id' value='${{esc(a.unique_id)}}' placeholder='必须唯一，例如：user001' />
     <label>目标好友(targets,逗号分隔)</label><input class='targets' value='${{esc(t)}}' placeholder='例如：张三,李四' />
-    <label>Cookies(JSON数组)</label><textarea class='cookies_json' rows='6' placeholder='例如：[{{"name":"sid_tt","value":"...","domain":".douyin.com","path":"/"}}]'>${{esc(a.cookies_json)}}</textarea>
+    <label>Cookies(JSON数组)</label><textarea class='cookies_json' rows='5' placeholder='例如：[{{"name":"sid_tt","value":"...","domain":".douyin.com","path":"/"}}]'>${{esc(a.cookies_json)}}</textarea>
+    <button onclick='fetchFriends(this)'>自动拉取好友昵称+ID</button>
+    <button onclick='fillTargetsFromFriends(this, "nickname")'>填入targets(昵称)</button>
+    <button onclick='fillTargetsFromFriends(this, "short_id")'>填入targets(ID)</button>
     <button onclick='this.parentElement.remove()'>删除此账号</button>
+    <pre class='friends_preview'>(尚未拉取好友)</pre>
   </div>`;
 }}
 
@@ -326,12 +405,57 @@ function addAccount(a){{
 }}
 
 function readAccounts(){{
-  return Array.from(document.querySelectorAll('.acc')).map(el => ({{
+  return Array.from(document.querySelectorAll('.acc')).map(el => ({
     username: el.querySelector('.username').value.trim(),
     unique_id: el.querySelector('.unique_id').value.trim(),
     targets: el.querySelector('.targets').value.split(',').map(x=>x.trim()).filter(Boolean),
     cookies_json: el.querySelector('.cookies_json').value.trim(),
-  }}));
+  }));
+}}
+
+async function fetchFriends(btn){{
+  const card = btn.closest('.acc');
+  const cookies = card.querySelector('.cookies_json').value.trim();
+  const preview = card.querySelector('.friends_preview');
+  if(!cookies){{ preview.innerText='请先填写 cookies_json'; return; }}
+
+  btn.disabled = true;
+  preview.innerText = '正在拉取好友列表，请稍候...';
+  try{{
+    const r = await fetch('/api/friends/fetch', {{
+      method:'POST',
+      headers:{{'Content-Type':'application/json'}},
+      body: JSON.stringify({{cookies_json: cookies}})
+    }});
+    const d = await r.json();
+    if(!d.ok){{
+      preview.innerText = '拉取失败：' + (d.error || 'unknown');
+      return;
+    }}
+    card._friends = d.items || [];
+    if(!card._friends.length){{
+      preview.innerText = '未拉取到好友（可能 cookie 不可用或页面结构变动）';
+      return;
+    }}
+    const lines = card._friends.slice(0, 200).map((x,i)=>`${{i+1}}. 昵称=${{x.nickname||'-'}} | short_id=${{x.short_id||'-'}}`);
+    preview.innerText = `共拉取 ${{card._friends.length}} 个好友\\n` + lines.join('\\n');
+  }}catch(e){{
+    preview.innerText = '拉取失败：' + e;
+  }}finally{{
+    btn.disabled = false;
+  }}
+}}
+
+function fillTargetsFromFriends(btn, mode){{
+  const card = btn.closest('.acc');
+  const items = card._friends || [];
+  if(!items.length){{
+    card.querySelector('.friends_preview').innerText = '请先点击“自动拉取好友昵称+ID”';
+    return;
+  }}
+  const vals = items.map(x => mode==='short_id' ? (x.short_id||'') : (x.nickname||'')).filter(Boolean);
+  const uniq = Array.from(new Set(vals));
+  card.querySelector('.targets').value = uniq.join(',');
 }}
 
 async function reloadCfg(){{
@@ -467,6 +591,19 @@ def api_update():
 def api_update_log():
     log = UPDATE_LOG.read_text(encoding='utf-8', errors='ignore') if UPDATE_LOG.exists() else ''
     return jsonify({'ok': True, 'log': log[-12000:], 'state': UPDATE_STATE})
+
+
+@app.route('/api/friends/fetch', methods=['POST'])
+def api_fetch_friends():
+    body = request.get_json(silent=True) or {}
+    cookies_json = str(body.get('cookies_json', '')).strip()
+    if not cookies_json:
+        return jsonify({'ok': False, 'error': 'cookies_json 不能为空'})
+    try:
+        items = fetch_friends_by_cookies(cookies_json)
+        return jsonify({'ok': True, 'items': items, 'count': len(items)})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)})
 
 
 if __name__ == '__main__':
