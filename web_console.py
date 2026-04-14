@@ -10,15 +10,24 @@ from pathlib import Path
 
 from flask import Flask, jsonify, request, Response
 
+APP_VERSION = 'Dy0.0.2'
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / 'data'
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 CONFIG_FILE = DATA_DIR / 'web_console_config.json'
 RUN_LOG = DATA_DIR / 'run.log'
+UPDATE_LOG = DATA_DIR / 'update.log'
 
 app = Flask(__name__)
 
 RUN_STATE = {
+    'running': False,
+    'started_at': None,
+    'finished_at': None,
+    'exit_code': None,
+}
+
+UPDATE_STATE = {
     'running': False,
     'started_at': None,
     'finished_at': None,
@@ -73,22 +82,20 @@ def build_env_from_config(cfg):
         uid = str(a.get('unique_id', '')).strip()
         if not uid:
             continue
+
         username = str(a.get('username', '')).strip() or uid
         targets = a.get('targets', [])
         if isinstance(targets, str):
             targets = [x.strip() for x in targets.split(',') if x.strip()]
+
         cookies_json = str(a.get('cookies_json', '')).strip()
         if not cookies_json:
             continue
 
-        # cookie 先做一次 json 合法性校验
+        # 校验 cookie JSON 合法
         json.loads(cookies_json)
 
-        tasks.append({
-            'username': username,
-            'unique_id': uid,
-            'targets': targets,
-        })
+        tasks.append({'username': username, 'unique_id': uid, 'targets': targets})
         env[f'COOKIES_{uid}'.upper()] = cookies_json
 
     env['TASKS'] = json.dumps(tasks, ensure_ascii=False)
@@ -103,6 +110,11 @@ def build_env_from_config(cfg):
     return env
 
 
+def get_python_bin():
+    py = str((BASE_DIR / '.venv' / 'bin' / 'python').resolve())
+    return py if Path(py).exists() else 'python3'
+
+
 def run_main_background():
     RUN_STATE['running'] = True
     RUN_STATE['started_at'] = now_ts()
@@ -113,29 +125,110 @@ def run_main_background():
     try:
         env = build_env_from_config(cfg)
     except Exception as e:
-        RUN_LOG.write_text(f'配置无效：{e}\n', encoding='utf-8')
+        RUN_LOG.write_text(f'配置无效：{e}\\n', encoding='utf-8')
         RUN_STATE['running'] = False
         RUN_STATE['finished_at'] = now_ts()
         RUN_STATE['exit_code'] = 2
         return
 
-    py = str((BASE_DIR / '.venv' / 'bin' / 'python').resolve())
-    if not Path(py).exists():
-        py = 'python3'
-
-    cmd = [py, 'main.py']
+    cmd = [get_python_bin(), 'main.py']
     ts = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
     with RUN_LOG.open('w', encoding='utf-8') as f:
-        f.write(f'[{ts}] === DouYinSparkFlow 任务开始 ===\n')
+        f.write(f'[{ts}] === DouYinSparkFlow 任务开始 ===\\n')
         f.flush()
         p = subprocess.Popen(cmd, cwd=str(BASE_DIR), env=env, stdout=f, stderr=subprocess.STDOUT)
         code = p.wait()
         ts2 = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
-        f.write(f'\n[{ts2}] === 任务结束 exit_code={code} ===\n')
+        f.write(f'\\n[{ts2}] === 任务结束 exit_code={code} ===\\n')
 
     RUN_STATE['running'] = False
     RUN_STATE['finished_at'] = now_ts()
     RUN_STATE['exit_code'] = code
+
+
+def clean_requirements_file():
+    req = BASE_DIR / 'requirements.txt'
+    if not req.exists():
+        return None
+
+    raw = req.read_bytes()
+    txt = None
+    for enc in ('utf-8-sig', 'utf-16', 'utf-16le', 'utf-16be'):
+        try:
+            txt = raw.decode(enc)
+            break
+        except Exception:
+            continue
+    if txt is None:
+        txt = raw.decode('utf-8', errors='ignore')
+
+    lines = []
+    for ln in txt.splitlines():
+        s = ln.strip().lstrip('\ufeff')
+        if not s or s.startswith('#'):
+            continue
+        lines.append(s)
+
+    clean = DATA_DIR / 'requirements.clean.txt'
+    clean.write_text('\\n'.join(lines) + '\\n', encoding='utf-8')
+    return clean
+
+
+def run_cmd(logf, cmd, cwd=None):
+    logf.write(f"$ {' '.join(cmd)}\\n")
+    logf.flush()
+    p = subprocess.Popen(cmd, cwd=str(cwd or BASE_DIR), stdout=logf, stderr=subprocess.STDOUT)
+    return p.wait()
+
+
+def update_background():
+    UPDATE_STATE['running'] = True
+    UPDATE_STATE['started_at'] = now_ts()
+    UPDATE_STATE['finished_at'] = None
+    UPDATE_STATE['exit_code'] = None
+
+    py = get_python_bin()
+    ts = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
+    with UPDATE_LOG.open('w', encoding='utf-8') as f:
+        f.write(f'[{ts}] === 开始更新 DouYinSparkFlow ({APP_VERSION}) ===\\n')
+
+        code = run_cmd(f, ['git', 'fetch', 'origin'])
+        if code != 0:
+            UPDATE_STATE['running'] = False
+            UPDATE_STATE['finished_at'] = now_ts()
+            UPDATE_STATE['exit_code'] = code
+            return
+
+        code = run_cmd(f, ['git', 'reset', '--hard', 'origin/main'])
+        if code != 0:
+            UPDATE_STATE['running'] = False
+            UPDATE_STATE['finished_at'] = now_ts()
+            UPDATE_STATE['exit_code'] = code
+            return
+
+        # 先升级 pip
+        run_cmd(f, [py, '-m', 'pip', 'install', '-U', 'pip'])
+
+        # 安装 requirements（兼容 UTF16 编码文件）
+        clean = clean_requirements_file()
+        if clean and clean.exists():
+            code = run_cmd(f, [py, '-m', 'pip', 'install', '-r', str(clean)])
+            if code != 0:
+                UPDATE_STATE['running'] = False
+                UPDATE_STATE['finished_at'] = now_ts()
+                UPDATE_STATE['exit_code'] = code
+                return
+
+        # 兜底确保控制台依赖
+        code = run_cmd(f, [py, '-m', 'pip', 'install', 'flask'])
+
+        ts2 = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
+        f.write(f'\\n[{ts2}] === 更新完成 exit_code={code} ===\\n')
+        f.write('提示：若更新涉及 web_console.py 代码，请手动重启 dyflow tmux 会话使新代码生效。\\n')
+
+    UPDATE_STATE['running'] = False
+    UPDATE_STATE['finished_at'] = now_ts()
+    UPDATE_STATE['exit_code'] = code
 
 
 @app.after_request
@@ -146,29 +239,45 @@ def no_cache(resp):
 
 @app.route('/')
 def index():
-    return Response("""
+    return Response(f"""
 <!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
 <title>DouYinSparkFlow 控制台</title>
 <style>
-body{font-family:Arial,sans-serif;max-width:1100px;margin:18px auto;padding:0 12px}
-textarea,input,select{width:100%;padding:6px;margin:4px 0}
-button{padding:8px 12px;margin:6px 6px 6px 0}
-.card{border:1px solid #ddd;border-radius:10px;padding:12px;margin:10px 0}
-pre{background:#111;color:#eee;padding:12px;border-radius:8px;white-space:pre-wrap}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+body{{font-family:Arial,sans-serif;max-width:1180px;margin:18px auto;padding:0 12px;background:#fafafa}}
+textarea,input,select{{width:100%;padding:8px;margin:4px 0;border:1px solid #ccc;border-radius:6px}}
+button{{padding:8px 12px;margin:6px 6px 6px 0;border-radius:6px;border:1px solid #aaa;background:#fff;cursor:pointer}}
+button.primary{{background:#1677ff;color:#fff;border-color:#1677ff}}
+.card{{border:1px solid #ddd;border-radius:10px;padding:12px;margin:10px 0;background:#fff}}
+pre{{background:#111;color:#eee;padding:12px;border-radius:8px;white-space:pre-wrap;max-height:320px;overflow:auto}}
+.grid{{display:grid;grid-template-columns:1fr 1fr;gap:12px}}
+.small{{color:#666;font-size:13px}}
+.badge{{display:inline-block;padding:2px 8px;border-radius:20px;background:#e6f4ff;color:#1677ff;font-size:12px;margin-left:8px}}
 </style></head><body>
-<h2>DouYinSparkFlow Web 控制台（Dy0.0.1）</h2>
+<h2>DouYinSparkFlow Web 控制台 <span class='badge'>版本 {APP_VERSION}</span></h2>
+
+<div class='card'>
+  <b>新手填写说明（先看这个）</b>
+  <ol>
+    <li>先在下方「账号任务」里新增账号，至少填：<code>unique_id</code>、<code>targets</code>、<code>cookies_json</code></li>
+    <li><code>targets</code> 多个值用英文逗号分隔，例如：<code>小明,小红</code></li>
+    <li><code>cookies_json</code> 要填 JSON 数组（通常来自浏览器导出的 cookies）</li>
+    <li>点「保存配置」后，再点「立即运行」</li>
+    <li>在运行日志中看结果</li>
+  </ol>
+  <div class='small'>match_mode=nickname 时按昵称匹配；match_mode=short_id 时按抖音号匹配。</div>
+</div>
+
 <div class='card'>
   <b>全局配置</b>
   <div class='grid'>
-    <div><label>代理地址</label><input id='proxy_address' /></div>
-    <div><label>匹配模式</label><select id='match_mode'><option value='nickname'>nickname</option><option value='short_id'>short_id</option></select></div>
+    <div><label>代理地址（可空）</label><input id='proxy_address' placeholder='例如: http://127.0.0.1:7890' /></div>
+    <div><label>匹配模式</label><select id='match_mode'><option value='nickname'>nickname（按昵称）</option><option value='short_id'>short_id（按抖音号）</option></select></div>
     <div><label>浏览器超时(ms)</label><input id='browser_timeout' type='number' /></div>
     <div><label>好友列表等待(ms)</label><input id='friend_list_wait_time' type='number' /></div>
     <div><label>重试次数</label><input id='task_retry_times' type='number' /></div>
-    <div><label>日志级别</label><input id='log_level' /></div>
+    <div><label>日志级别</label><input id='log_level' placeholder='DEBUG/INFO/WARNING/ERROR' /></div>
   </div>
-  <label>一言分类(JSON数组)</label><input id='hitokoto_types' />
+  <label>一言分类(JSON数组)</label><input id='hitokoto_types' placeholder='例如：["文学","影视"]' />
   <label>消息模板</label><textarea id='message_template' rows='4'></textarea>
 </div>
 
@@ -179,58 +288,68 @@ pre{background:#111;color:#eee;padding:12px;border-radius:8px;white-space:pre-wr
 </div>
 
 <div class='card'>
-  <button onclick='saveCfg()'>保存配置</button>
-  <button onclick='runTask()'>立即运行</button>
+  <button class='primary' onclick='saveCfg()'>保存配置</button>
+  <button class='primary' onclick='runTask()'>立即运行</button>
   <button onclick='reloadCfg()'>刷新配置</button>
+  <button onclick='startUpdate()'>更新脚本</button>
   <span id='msg'></span>
+  <div class='small'>更新脚本会执行：<code>git reset --hard origin/main</code> + 安装依赖。若 web 控制台代码有更新，请手动重启 tmux 会话生效。</div>
 </div>
 
-<div class='card'>
-  <b>运行日志</b>
-  <pre id='log'>(暂无)</pre>
+<div class='grid'>
+  <div class='card'>
+    <b>运行日志</b>
+    <pre id='log'>(暂无)</pre>
+  </div>
+  <div class='card'>
+    <b>更新日志</b>
+    <pre id='ulog'>(暂无)</pre>
+  </div>
 </div>
 
 <script>
-function accRow(a={username:'',unique_id:'',targets:[],cookies_json:''}){
+function esc(s){{return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}}
+
+function accRow(a={{username:'',unique_id:'',targets:[],cookies_json:''}}){{
   const t = Array.isArray(a.targets)?a.targets.join(','):(a.targets||'');
   return `<div class='card acc'>
-    <label>账号备注(username)</label><input class='username' value='${a.username||''}' />
-    <label>唯一ID(unique_id)</label><input class='unique_id' value='${a.unique_id||''}' />
-    <label>目标好友(targets,逗号分隔)</label><input class='targets' value='${t}' />
-    <label>Cookies(JSON数组)</label><textarea class='cookies_json' rows='6'>${a.cookies_json||''}</textarea>
+    <label>账号备注(username)</label><input class='username' value='${{esc(a.username)}}' placeholder='例如：主号A' />
+    <label>唯一ID(unique_id)</label><input class='unique_id' value='${{esc(a.unique_id)}}' placeholder='必须唯一，例如：user001' />
+    <label>目标好友(targets,逗号分隔)</label><input class='targets' value='${{esc(t)}}' placeholder='例如：张三,李四' />
+    <label>Cookies(JSON数组)</label><textarea class='cookies_json' rows='6' placeholder='例如：[{{"name":"sid_tt","value":"...","domain":".douyin.com","path":"/"}}]'>${{esc(a.cookies_json)}}</textarea>
     <button onclick='this.parentElement.remove()'>删除此账号</button>
   </div>`;
-}
+}}
 
-function addAccount(a){
+function addAccount(a){{
   document.getElementById('accounts').insertAdjacentHTML('beforeend', accRow(a));
-}
+}}
 
-function readAccounts(){
-  return Array.from(document.querySelectorAll('.acc')).map(el => ({
+function readAccounts(){{
+  return Array.from(document.querySelectorAll('.acc')).map(el => ({{
     username: el.querySelector('.username').value.trim(),
     unique_id: el.querySelector('.unique_id').value.trim(),
     targets: el.querySelector('.targets').value.split(',').map(x=>x.trim()).filter(Boolean),
     cookies_json: el.querySelector('.cookies_json').value.trim(),
-  }));
-}
+  }}));
+}}
 
-async function reloadCfg(){
+async function reloadCfg(){{
   const r = await fetch('/api/config');
   const d = await r.json();
   if(!d.ok) return;
   const c=d.config;
-  for(const k of ['proxy_address','match_mode','browser_timeout','friend_list_wait_time','task_retry_times','log_level','message_template']){
+  for(const k of ['proxy_address','match_mode','browser_timeout','friend_list_wait_time','task_retry_times','log_level','message_template']){{
     const el=document.getElementById(k); if(el) el.value = c[k] ?? '';
-  }
+  }}
   document.getElementById('hitokoto_types').value = JSON.stringify(c.hitokoto_types || []);
   const box=document.getElementById('accounts'); box.innerHTML='';
   (c.accounts||[]).forEach(addAccount);
-}
+}}
 
-async function saveCfg(){
-  try{
-    const body={
+async function saveCfg(){{
+  try{{
+    const body={{
       proxy_address: document.getElementById('proxy_address').value.trim(),
       match_mode: document.getElementById('match_mode').value.trim(),
       browser_timeout: Number(document.getElementById('browser_timeout').value||120000),
@@ -240,33 +359,50 @@ async function saveCfg(){
       message_template: document.getElementById('message_template').value,
       hitokoto_types: JSON.parse(document.getElementById('hitokoto_types').value || '[]'),
       accounts: readAccounts(),
-    };
-    const r = await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    }};
+    const r = await fetch('/api/config',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(body)}});
     const d = await r.json();
     document.getElementById('msg').innerText = d.ok ? '✅ 已保存' : ('❌ '+(d.error||'保存失败'));
-  }catch(e){
+  }}catch(e){{
     document.getElementById('msg').innerText='❌ 保存失败: '+e;
-  }
-}
+  }}
+}}
 
-async function runTask(){
-  const r = await fetch('/api/run',{method:'POST'});
+async function runTask(){{
+  const r = await fetch('/api/run',{{method:'POST'}});
   const d = await r.json();
   document.getElementById('msg').innerText = d.ok ? '🚀 已启动' : ('❌ '+(d.error||'启动失败'));
-}
+}}
 
-async function pollLog(){
+async function startUpdate(){{
+  const r = await fetch('/api/update',{{method:'POST'}});
+  const d = await r.json();
+  document.getElementById('msg').innerText = d.ok ? '🔄 更新已启动' : ('❌ '+(d.error||'更新启动失败'));
+}}
+
+async function pollLog(){{
   const r = await fetch('/api/run/log?_t='+Date.now());
   const d = await r.json();
   if(!d.ok) return;
-  const s=d.state||{};
-  const head=`[状态] ${s.running?'运行中':'空闲'} | exit=${s.exit_code} | 开始=${s.started_at||'-'} | 结束=${s.finished_at||'-'}\n\n`;
+  const s=d.state||{{}};
+  const head=`[状态] ${{s.running?'运行中':'空闲'}} | exit=${{s.exit_code}} | 开始=${{s.started_at||'-'}} | 结束=${{s.finished_at||'-'}}\\n\\n`;
   document.getElementById('log').innerText = head + (d.log || '(暂无)');
-}
+}}
+
+async function pollUpdateLog(){{
+  const r = await fetch('/api/update/log?_t='+Date.now());
+  const d = await r.json();
+  if(!d.ok) return;
+  const s=d.state||{{}};
+  const head=`[状态] ${{s.running?'更新中':'空闲'}} | exit=${{s.exit_code}} | 开始=${{s.started_at||'-'}} | 结束=${{s.finished_at||'-'}}\\n\\n`;
+  document.getElementById('ulog').innerText = head + (d.log || '(暂无)');
+}}
 
 reloadCfg();
 setInterval(pollLog, 2000);
+setInterval(pollUpdateLog, 2000);
 pollLog();
+pollUpdateLog();
 </script>
 </body></html>
 """, mimetype='text/html')
@@ -274,7 +410,7 @@ pollLog();
 
 @app.route('/api/config')
 def api_get_config():
-    return jsonify({'ok': True, 'config': load_config()})
+    return jsonify({'ok': True, 'config': load_config(), 'version': APP_VERSION})
 
 
 @app.route('/api/config', methods=['POST'])
@@ -290,7 +426,6 @@ def api_set_config():
     if not isinstance(accounts, list):
         return jsonify({'ok': False, 'error': 'accounts 必须是数组'})
 
-    # 基础校验
     for i, a in enumerate(accounts, 1):
         uid = str(a.get('unique_id', '')).strip()
         cookies_json = str(a.get('cookies_json', '')).strip()
@@ -317,6 +452,21 @@ def api_run():
 def api_run_log():
     log = RUN_LOG.read_text(encoding='utf-8', errors='ignore') if RUN_LOG.exists() else ''
     return jsonify({'ok': True, 'log': log[-12000:], 'state': RUN_STATE})
+
+
+@app.route('/api/update', methods=['POST'])
+def api_update():
+    if UPDATE_STATE['running']:
+        return jsonify({'ok': False, 'error': '更新正在执行'})
+    t = threading.Thread(target=update_background, daemon=True)
+    t.start()
+    return jsonify({'ok': True})
+
+
+@app.route('/api/update/log')
+def api_update_log():
+    log = UPDATE_LOG.read_text(encoding='utf-8', errors='ignore') if UPDATE_LOG.exists() else ''
+    return jsonify({'ok': True, 'log': log[-12000:], 'state': UPDATE_STATE})
 
 
 if __name__ == '__main__':
