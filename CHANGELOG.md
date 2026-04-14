@@ -1,5 +1,23 @@
 # 更新日志
 
+## Dy0.0.4 - 2026-04-14
+
+### 修复
+- 修复“自动拉取好友”在未安装 Playwright Chromium 时直接报错：
+  - `BrowserType.launch: Executable doesn't exist`
+- 现在会在拉取前自动尝试安装浏览器（`python -m playwright install chromium`），减少首次部署失败。
+
+### 优化
+- cookies 输入兼容性增强：
+  - 支持 JSON 数组
+  - 支持包含 `cookies` / `data` 数组的 JSON 对象
+  - 支持直接粘贴 `name=value; ...` 字符串（自动转换）
+- 自动规范化 cookie 字段（`sameSite` / `expires` / `domain` / `path`），降低因格式不规范导致的失败概率。
+- 保存配置时改为按“可用性”校验 cookies，不再只限定 JSON 数组，错误提示更直观。
+
+### 文档
+- README 增补 Cookie 获取方法与两种输入格式说明，降低新手上手门槛。
+
 ## Dy0.0.3.1 - 2026-04-14
 
 ### 修复

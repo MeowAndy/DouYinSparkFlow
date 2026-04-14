@@ -122,10 +122,11 @@ python web_console.py
 
 ## 6. cookies_json 从哪来？
 
-你需要的是 **JSON 数组 cookies**，不是单行 `name=value;...` 字符串。
+你可以使用两种输入方式（新版都支持）：
 
-常见方式：
+### 方式 A（推荐）：JSON 数组 cookies
 
+常见来源：
 - 浏览器开发者工具导出 cookies（JSON）
 - 你现有脚本里已存的 cookie JSON
 
@@ -141,6 +142,26 @@ python web_console.py
   }
 ]
 ```
+
+### 方式 B：Cookie 字符串（也可直接粘贴）
+
+例如：
+
+```text
+sessionid=xxxx; sid_tt=yyyy; passport_csrf_token=zzzz
+```
+
+控制台会自动转换为 Playwright 可用格式。
+
+### 推荐获取 Cookie 的稳妥方法
+
+1. 用 Chrome 打开：`https://creator.douyin.com/creator-micro/data/following/chat`
+2. 登录后按 `F12` → `Application` → `Storage` → `Cookies`
+3. 选择 `https://creator.douyin.com` 或 `.douyin.com`
+4. 导出为 JSON（优先）或复制为 `name=value; ...`
+5. 粘贴到控制台账号里的 `cookies_json`
+
+> 说明：新版已自动处理 `sameSite`、`expires`、`domain/path` 等兼容问题，避免常见解析报错。
 
 ---
 
