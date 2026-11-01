@@ -1,5 +1,12 @@
 <template>
   <div class="sidebar-content">
+    <div class="sidebar-brand">
+      <div class="brand-mark">火</div>
+      <div class="brand-copy">
+        <strong>火花续航</strong>
+        <span>DouYinSparkFlow</span>
+      </div>
+    </div>
     <div class="sidebar-head">
       <ModeSwitcher :schedule="schedule" :proxy="proxy" @changed="$emit('changed', $event)" />
     </div>
@@ -77,7 +84,30 @@ function onResourceClick(item) {
   user-select: none;
 }
 
-.sidebar-head { padding: 14px 12px 8px; }
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 18px 16px 12px;
+}
+
+.brand-mark {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: var(--vg-fg);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.brand-copy { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+.brand-copy strong { color: var(--vg-fg); font-size: 13px; font-weight: 650; }
+.brand-copy span { color: var(--vg-fg-4); font-size: 9px; letter-spacing: .08em; }
+
+.sidebar-head { padding: 4px 12px 10px; }
 
 .nav-items {
   padding: 6px 8px;

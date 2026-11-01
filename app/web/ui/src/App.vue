@@ -17,16 +17,26 @@
 
     <el-container>
       <el-header class="app-header">
-        <button
-          type="button"
-          class="icon-btn"
-          :title="headerBtnTitle"
-          @click="toggleSidebar"
-        >
-          <PanelLeft :size="14" />
-        </button>
-        <span class="page-title">{{ currentTitle }}</span>
-        <span class="save-status" role="status">{{ saveStatus }}</span>
+        <div class="header-leading">
+          <button
+            type="button"
+            class="icon-btn"
+            :title="headerBtnTitle"
+            @click="toggleSidebar"
+          >
+            <PanelLeft :size="15" />
+          </button>
+          <div class="header-copy">
+            <span class="page-kicker">D O U Y I N  ·  S P A R K  F L O W</span>
+            <span class="page-title">{{ currentTitle }}</span>
+          </div>
+        </div>
+        <div class="header-meta">
+          <span class="mode-pill" :class="`mode-${state?.schedule?.mode || 'unset'}`">
+            {{ state?.schedule?.mode_label || '尚未设置运行模式' }}
+          </span>
+          <span class="save-status" role="status">{{ saveStatus }}</span>
+        </div>
       </el-header>
 
       <el-main class="app-main">
@@ -36,7 +46,7 @@
             <Accounts v-if="activeView === 'accounts'" :accounts="state.config.accounts" @change="markDirty" @refresh="load" />
             <AiChat v-if="activeView === 'ai-chat'" :config="state.config" @change="markDirty" @start="startAiChat" />
             <Tunnel v-if="activeView === 'tunnel' && isConfigMode" :proxy="state.proxy" @change="markDirty" />
-            <Summary v-if="activeView === 'summary'" :data="state" :status="statusInfo" :schedule="state.schedule" @clean="cleanOrphans" @copy="copyEnv" @open="openEnvDir" @cancel="scheduleCancel" @reregister="scheduleReregister" />
+            <Summary v-if="activeView === 'summary'" :data="state" :status="statusInfo" :schedule="state.schedule" :manual-run="manualRun" @clean="cleanOrphans" @copy="copyEnv" @open="openEnvDir" @cancel="scheduleCancel" @reregister="scheduleReregister" @run-now="runManual" @cancel-run="cancelManual" />
             <RunLog v-if="activeView === 'runlog' && !isConfigMode" />
             <iframe
               v-if="activeResource"
@@ -93,7 +103,7 @@ import {
   Sparkles,
   Users,
 } from '@lucide/vue'
-import { py, on } from './api'
+import { py, on, applyModeWithElevation } from './api'
 import BaseConfig from './views/BaseConfig.vue'
 import Accounts from './views/Accounts.vue'
 import AiChat from './views/AiChat.vue'
@@ -105,6 +115,7 @@ import SidebarContent from './views/SidebarContent.vue'
 const BREAKPOINT = 768
 
 const state = ref(null)
+const manualRun = ref({ running: false, started_at: null, finished_at: null, exit_code: null })
 const loading = ref(false)
 const saving = ref(false)
 const error = ref('')
@@ -249,6 +260,34 @@ async function refreshSchedule() {
   }
 }
 
+async function refreshManualRun() {
+  try { manualRun.value = await py('manual_run_status') } catch (e) { /* no-op */ }
+}
+
+async function runManual(done) {
+  try {
+    if (dirty.value || saving.value) {
+      await save()
+    }
+    manualRun.value = await py('manual_run_start')
+    ElMessage({ type: 'success', message: '已启动一轮手动任务，可在执行日志查看进度' })
+    done?.()
+  } catch (e) {
+    ElMessage({ type: 'error', message: String(e.message || e) })
+    done?.(String(e.message || e))
+  }
+}
+
+async function cancelManual() {
+  try {
+    await py('manual_run_cancel')
+    await refreshManualRun()
+    ElMessage({ type: 'success', message: '已请求停止任务' })
+  } catch (e) {
+    ElMessage({ type: 'error', message: String(e.message || e) })
+  }
+}
+
 async function scheduleCancel() {
   try {
     state.value.schedule = await py('schedule_cancel')
@@ -262,10 +301,14 @@ async function scheduleReregister() {
   const mode = state.value?.schedule?.mode
   if (mode !== 'scheduled' && mode !== 'boot') return
   try {
-    const res = await py('schedule_set_mode', { mode })
+    const res = await applyModeWithElevation(mode)
+    if (!res.ok) {
+      if (!res.cancelled && res.message) ElMessage({ type: 'error', message: res.message })
+      return
+    }
     state.value.schedule = res.schedule
-    state.value.proxy = res.proxy
-    ElMessage({ type: 'success', message: '已重新注册系统任务' })
+    if (res.elevated) ElMessage({ type: 'success', message: '已用管理员权限完成注册' })
+    else ElMessage({ type: 'success', message: '已重新注册系统任务' })
   } catch (e) {
     ElMessage({ type: 'error', message: String(e.message || e) })
   }
@@ -283,7 +326,9 @@ onMounted(() => {
   updateNarrow()
   window.addEventListener('resize', updateNarrow)
   load()
+  refreshManualRun()
   on('notify', (data) => ElMessage(data?.tip ?? ''))
+  setInterval(refreshManualRun, 1500)
 })
 
 onUnmounted(() => {
@@ -423,7 +468,36 @@ html, body, #app {
 }
 
 .app { height: 100%; }
-.save-status { margin-left: auto; font-size: 12px; color: var(--vg-fg-3); }
+
+.header-meta { flex: 0 0 auto; }
+
+.save-status { font-size: 12px; color: var(--vg-fg-3); white-space: nowrap; }
+
+.mode-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--vg-bg-subtle);
+  box-shadow: var(--vg-ring-soft);
+  color: var(--vg-fg-2);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.mode-pill::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--vg-fg-4);
+}
+
+.mode-pill.mode-scheduled::before,
+.mode-pill.mode-boot::before { background: #16a34a; }
+.mode-pill.mode-config::before { background: #d97706; }
 
 /* ── 侧边栏（el-aside）：浅色 + shadow-as-border ── */
 .app-aside {
@@ -436,11 +510,39 @@ html, body, #app {
 .app-header {
   display: flex;
   align-items: center;
-  gap: 10px;
-  height: 48px;
-  padding: 0 14px;
+  justify-content: space-between;
+  gap: 14px;
+  min-height: 64px;
+  height: auto;
+  padding: 10px 24px;
   background: var(--vg-bg);
   box-shadow: 0 1px 0 0 var(--vg-border);
+}
+
+.header-leading,
+.header-meta {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.header-leading { gap: 12px; }
+.header-meta { gap: 14px; }
+
+.header-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.page-kicker {
+  color: var(--vg-fg-4);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  line-height: 1.2;
+  white-space: nowrap;
 }
 
 .icon-btn {

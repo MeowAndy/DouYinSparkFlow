@@ -8,7 +8,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+import os
+import subprocess
+import threading
+from datetime import date, datetime
 from pathlib import Path
 
 from app.config import env_store, notify_spec, profile_store, settings
@@ -347,6 +350,66 @@ class ScheduleService:
             notes.append(f"定时任务更新失败：{type(exc).__name__}: {exc}")
         return notes
 
+    def elevate_register(self, payload) -> dict:
+        """当前账户无权创建计划任务时，弹出 UAC 以管理员身份完成注册。
+
+        只提权「注册」这一个动作：起一个带 runas 的子进程执行本程序的
+        scheduler install，等它结束后回读状态。执行任务本身仍以普通
+        用户身份在登录后运行，不需要管理员。
+        """
+        import subprocess
+
+        from app.scheduler.core import Launcher
+        from app.util import no_window_kwargs
+
+        payload = payload or {}
+        mode = str(payload.get("mode") or "scheduled").strip() or "scheduled"
+        run_time = str(payload.get("run_time") or "").strip()
+        launcher = Launcher.detect()
+
+        if launcher.frozen:
+            file_path = launcher.exe
+            args = ["scheduler", "install", "--mode", mode]
+        else:
+            file_path = launcher.exe
+            args = [str(launcher.root / "main.py"), "scheduler", "install", "--mode", mode]
+        if run_time:
+            args.extend(["--time", run_time])
+
+        def ps_quote(text: str) -> str:
+            return "'" + str(text).replace("'", "''") + "'"
+
+        arg_list = " ".join(ps_quote(arg) for arg in args)
+        script = "\n".join([
+            "$ErrorActionPreference = 'Stop'",
+            "try {",
+            f"  $p = Start-Process -FilePath {ps_quote(file_path)} -ArgumentList {ps_quote(arg_list)} "
+            f"-WorkingDirectory {ps_quote(str(launcher.root))} -Verb RunAs -Wait -PassThru",
+            "  Write-Output (\"EXIT:\" + $p.ExitCode)",
+            "} catch {",
+            "  Write-Output 'EXIT:CANCELLED'",
+            "}",
+        ])
+        encoding = "gbk" if os.name == "nt" else None
+        proc = subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+            capture_output=True, text=True, encoding=encoding, errors="replace",
+            **no_window_kwargs(),
+        )
+        output = (proc.stdout or "").strip()
+        marker = next((line for line in output.splitlines() if line.startswith("EXIT:")), "")
+        code = marker.removeprefix("EXIT:")
+        if code == "CANCELLED":
+            return {"ok": False, "cancelled": True, "message": "已取消管理员授权"}
+        if code == "0":
+            status = self.status()
+            return {"ok": bool(status.get("installed")), "cancelled": False,
+                    "message": "已用管理员权限完成注册" if status.get("installed") else "提权完成但未查询到任务",
+                    "schedule": status}
+        detail = (proc.stderr or "").strip() or output or f"退出码 {code or proc.returncode}"
+        return {"ok": False, "cancelled": False, "message": f"管理员注册未成功：{detail}"}
+
+
 
 # ---------------------------------------------------------------------------
 # 打开目录 / URL
@@ -391,6 +454,78 @@ def _read_day_log(day: str) -> str:
     return "\n".join(lines)
 
 
+class ManualRunService:
+    """手动执行一轮任务：独立子进程隔离配置导入缓存。"""
+
+    def __init__(self, env_path):
+        self.env_path = Path(env_path)
+        self._lock = threading.RLock()
+        self._process = None
+        self._state = {"running": False, "started_at": None, "finished_at": None, "exit_code": None}
+
+    def status(self, _payload=None):
+        with self._lock:
+            process = self._process
+            if process is not None and process.poll() is not None:
+                self._state["running"] = False
+                self._state["exit_code"] = process.returncode
+                self._state["finished_at"] = self._state["finished_at"] or datetime.now().isoformat(timespec="seconds")
+                # 手动执行也属于“今日执行”，同步写入调度历史，
+                # 让概览页与定时执行显示同一份事实。
+                from app.scheduler import state as scheduler_state
+                today = date.today().isoformat()
+                scheduler_state.record_attempt(process.returncode, today)
+                if process.returncode == 0:
+                    scheduler_state.record_success(today)
+                self._process = None
+            return dict(self._state)
+
+    def start(self, _payload=None):
+        with self._lock:
+            if self._process is not None and self._process.poll() is None:
+                raise AppError("已有手动任务正在运行")
+            # 运行前重新读取并校验官方配置，避免页面旧状态或手工改坏 .env。
+            from app.config.env_store import load_config
+            from app.config.models import validate
+            config, _notes = load_config(self.env_path)
+            issues = validate(config)
+            errors = [message for level, message in issues if level == "错误"]
+            if errors:
+                raise AppError("配置校验未通过：" + "；".join(errors))
+            root = self.env_path.parent
+            log_path = Path(TASK_LOG)
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            # 任务入口必须走 Launcher.task_argv()：打包成 EXE 后 sys.executable
+            # 是程序自身，正确的命令是 [exe, task]；源码形态才是 [python, main.py, task]。
+            # 直接拼 [sys.executable, "main.py", "task"] 会让 EXE 把 main.py 当启动
+            # 模式解析，main.py 以“未知启动模式”退出（退出码 2）。
+            from app.scheduler.core import Launcher
+
+            launcher = Launcher.detect()
+            env = os.environ.copy()
+            env["PYTHONUNBUFFERED"] = "1"
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+            self._process = subprocess.Popen(
+                launcher.task_argv(),
+                cwd=str(launcher.root), env=env, creationflags=creationflags,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            self._state = {
+                "running": True,
+                "started_at": datetime.now().isoformat(timespec="seconds"),
+                "finished_at": None,
+                "exit_code": None,
+            }
+            return dict(self._state)
+
+    def cancel(self, _payload=None):
+        with self._lock:
+            if self._process is None or self._process.poll() is not None:
+                return self.status()
+            self._process.terminate()
+            return {"ok": True, "message": "已请求停止手动任务"}
+
+
 class LogService:
     """执行日志：按天历史（热力图） + 某天的任务日志。"""
 
@@ -425,6 +560,7 @@ class Service:
         self.schedule = ScheduleService(self.config_service)
         self.desktop = DesktopActions()
         self.logs = LogService()
+        self.manual_run = ManualRunService(self.config_service.env_path)
         self.env_path = self.config_service.env_path
 
     @property
@@ -473,6 +609,9 @@ class Service:
     def schedule_set_mode(self, payload) -> dict:
         return self.schedule.set_mode(payload)
 
+    def schedule_elevate_register(self, payload=None) -> dict:
+        return self.schedule.elevate_register(payload)
+
     def schedule_cancel(self, _payload=None) -> dict:
         return self.schedule.cancel()
 
@@ -487,6 +626,16 @@ class Service:
 
     def ping(self, _payload=None) -> dict:
         return self.config_service.ping()
+
+    def manual_run_start(self, payload=None) -> dict:
+        # 保存动作由前端先调用 save_config；这里仅负责隔离执行。
+        return self.manual_run.start(payload)
+
+    def manual_run_status(self, payload=None) -> dict:
+        return self.manual_run.status(payload)
+
+    def manual_run_cancel(self, payload=None) -> dict:
+        return self.manual_run.cancel(payload)
 
 
 def make_bridge(bridge, worker_factory=None) -> "AccountOperator":
@@ -507,10 +656,14 @@ def make_bridge(bridge, worker_factory=None) -> "AccountOperator":
         notify_test=service.notify_test,
         schedule_status=service.schedule_status,
         schedule_set_mode=service.schedule_set_mode,
+        schedule_elevate_register=service.schedule_elevate_register,
         schedule_cancel=service.schedule_cancel,
         schedule_history=service.schedule_history,
         schedule_day_log=service.schedule_day_log,
         open_log_dir=service.open_log_dir,
+        manual_run_start=service.manual_run_start,
+        manual_run_status=service.manual_run_status,
+        manual_run_cancel=service.manual_run_cancel,
         account_login_start=ops.login_start,
         account_conversations_start=ops.conversations_start,
         account_chat_export_start=ops.chat_export_start,

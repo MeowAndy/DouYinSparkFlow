@@ -207,6 +207,71 @@ class ServiceTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         open_url.assert_called_once_with("https://example.com")
 
+    def test_elevate_register_parses_exit_markers(self):
+        from unittest import mock
+
+        cases = {
+            "EXIT:CANCELLED": lambda res: (res["cancelled"] is True, res["ok"] is False),
+            "EXIT:0": lambda res: (res["cancelled"] is False, "ok" in res),
+            "EXIT:2": lambda res: (res["cancelled"] is False, res["ok"] is False and "管理员注册未成功" in res["message"]),
+        }
+        for marker, check in cases.items():
+            with self.subTest(marker=marker):
+                with mock.patch("subprocess.run") as run:
+                    run.return_value = mock.Mock(stdout=marker + "\n", stderr="", returncode=0)
+                    result = self.service.schedule_elevate_register({"mode": "scheduled", "run_time": "09:00"})
+                self.assertTrue(check(result))
+
+    def test_manual_run_uses_launcher_argv(self):
+        """手动执行的子进程命令必须由 Launcher 生成——打包成 EXE 后
+        sys.executable 是程序自身，拼 main.py 会得到退出码 2。"""
+        from unittest import mock
+
+        started = {}
+
+        def fake_popen(argv, **kwargs):
+            started["argv"] = list(argv)
+            started["cwd"] = kwargs.get("cwd")
+            proc = mock.Mock()
+            proc.poll.return_value = None
+            proc.returncode = None
+            return proc
+
+        self.service.save_config(
+            {
+                "config": {
+                    "run_time": "09:00:00",
+                    "tz": "Asia/Shanghai",
+                    "message_template": "x",
+                    "hitokoto_types": ["文学"],
+                    "accounts": [
+                        {"username": "a", "unique_id": "AAA", "cookies": "[1]", "targets": ["t"]}
+                    ],
+                }
+            }
+        )
+        with mock.patch("subprocess.Popen", side_effect=fake_popen):
+            result = self.service.manual_run_start()
+
+        self.assertTrue(result["running"])
+        from app.scheduler.core import Launcher
+        expected = Launcher.detect().task_argv()
+        self.assertEqual(started["argv"], expected)
+        # 停止状态轮询会把进程标记为结束
+        self.service.manual_run._process.poll.return_value = 0
+        self.service.manual_run._process.returncode = 0
+        status = self.service.manual_run_status()
+        self.assertFalse(status["running"])
+
+    def test_elevate_register_reports_failure_detail(self):
+        from unittest import mock
+
+        with mock.patch("subprocess.run") as run:
+            run.return_value = mock.Mock(stdout="", stderr="boom", returncode=1)
+            result = self.service.schedule_elevate_register({"mode": "scheduled"})
+        self.assertFalse(result["ok"])
+        self.assertIn("管理员注册未成功", result["message"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -289,6 +289,25 @@ class AccountOperator:
             "profile_dir": str(profile_dir),
         }
 
+    def _account_cookies(self, unique_id: str) -> str:
+        """从 .env 读账号当前 Cookie（单行 JSON 文本）。
+
+        拉会话/导出的浏览器靠配置目录里的登录态，但同一账号反复在任务的
+        全新上下文里登录后，旧会话会被抖音踢下线 —— 而 .env 里的 Cookie
+        是最近一次任务用的，往往仍有效。注入进去能避免撞登录墙。
+        """
+        try:
+            from app import paths
+            from app.config import env_store
+
+            config, _ = env_store.load_config(paths.ENV_FILE)
+            for account in config.accounts:
+                if account.unique_id.strip() == unique_id and account.cookies.strip():
+                    return account.cookies
+        except Exception:
+            pass
+        return ""
+
     def _spawn_conversations(self, unique_id: str, export_payload=None) -> dict:
         profile = self._resolve_folder(unique_id)
         folder = profile["folder"]
@@ -323,6 +342,7 @@ class AccountOperator:
             {
                 "profile_dir": str(profile_dir),
                 "ready_status": "浏览器已就绪 —— 正在加载会话列表",
+                "cookies": self._account_cookies(unique_id),
             },
         )
         self._forward(session, "log", f"浏览器配置目录：{profile_dir}")

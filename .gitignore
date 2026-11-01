@@ -64,3 +64,8 @@ app/window.json
 # 与 har_logs/ 同一性质 —— 只在本机留，不入库。
 pw_api.log
 pw_*.log
+
+# 本地构建的 Windows 发行包
+DouyinSparkFlow-win-x64.zip
+app.log
+.zcode/

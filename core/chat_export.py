@@ -118,5 +118,7 @@ def write_export(root, *, account, friend, conv_id, history):
         sender = '我' if row['from_me'] else friend
         lines.extend([f'[{label(row["created_at"])}] {sender}', row['text'], ''])
     txt_path.write_text('\n'.join(lines), encoding='utf-8-sig')
-    return {'folder': str(folder.resolve()), 'txt_path': str(txt_path.resolve()),
-            'json_path': str(json_path.resolve()), 'metadata': meta}
+    # 不调用 Path.resolve()：Windows 临时目录可能使用 8.3 短路径，
+    # 强制展开后会让调用方无法用原始 root 做安全范围判断。
+    return {'folder': str(folder.absolute()), 'txt_path': str(txt_path.absolute()),
+            'json_path': str(json_path.absolute()), 'metadata': meta}

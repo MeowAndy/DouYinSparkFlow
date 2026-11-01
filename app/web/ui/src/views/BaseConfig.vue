@@ -1,5 +1,13 @@
 <template>
   <div class="config-page">
+    <div class="page-intro">
+      <div>
+        <p class="eyebrow">TASK SETTINGS</p>
+        <h1>任务配置</h1>
+        <p class="intro-sub">消息内容与运行参数会自动保存到项目配置。</p>
+      </div>
+      <span class="autosave-note">编辑后自动保存</span>
+    </div>
     <div class="form-grid">
       <div class="field half">
         <label class="label">执行时间（仅 Docker）</label>
@@ -104,7 +112,20 @@ function emitChange() { emit('change') }
 </script>
 
 <style scoped>
-.config-page { width: 100%; }
+.config-page { width: 100%; max-width: 1080px; margin: 0 auto; }
+
+.page-intro {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 4px 2px 20px;
+}
+
+.eyebrow { margin-bottom: 6px; color: var(--vg-fg-4); font-size: 10px; font-weight: 650; letter-spacing: .16em; }
+.page-intro h1 { color: var(--vg-fg); font-size: 25px; font-weight: 650; letter-spacing: -.04em; line-height: 1.2; }
+.intro-sub { margin-top: 6px; color: var(--vg-fg-3); font-size: 13px; }
+.autosave-note { color: var(--vg-fg-4); font-size: 11px; padding-bottom: 3px; }
 
 .form-grid {
   display: flex;

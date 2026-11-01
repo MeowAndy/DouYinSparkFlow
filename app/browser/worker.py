@@ -893,13 +893,21 @@ class BrowserLoginWorker(threading.Thread):
             return
 
         self.emit("status", "正在打开聊天页并检查登录态…")
+        # 门禁等待跟随用户配置（.env 的 IM_READY_TIMEOUT，默认 120s），
+        # 但不低于历史固定值 45s —— 慢网络/慢机器上 45s 经常不够。
+        try:
+            ready_timeout = max(
+                CONVERSATION_READY_TIMEOUT_SECONDS, float(os.getenv("IM_READY_TIMEOUT", "120"))
+            )
+        except ValueError:
+            ready_timeout = CONVERSATION_READY_TIMEOUT_SECONDS
         try:
             im = douyin_im.DouyinIM(
                 self.page,
                 timeout=CONVERSATION_SCAN_TIMEOUT_SECONDS,
                 max_steps=CONVERSATION_MAX_STEPS,
                 settle_ms=CONVERSATION_SETTLE_MS,
-                ready_timeout=CONVERSATION_READY_TIMEOUT_SECONDS,
+                ready_timeout=ready_timeout,
             )
         except Exception as exc:
             self.emit("error", f"会话扫描初始化失败：{type(exc).__name__}: {exc}")
@@ -907,7 +915,20 @@ class BrowserLoginWorker(threading.Thread):
 
         res = im.wait_ready()
         if res.get("status") != douyin_im.STATUS_READY:
-            self.emit("error", _ready_error(res))
+            hint = ""
+            try:
+                body = self.page.evaluate(
+                    '() => document.body ? document.body.innerText.slice(0, 600) : ""'
+                )
+                if any(mark in body for mark in ("一键登录", "登录其他账号", "扫码登录", "登录即同意")):
+                    hint = (
+                        "（页面显示的是登录墙：这个配置目录里的登录态已失效。"
+                        "请到「账户配置」点「刷新登录信息」重新扫码；"
+                        "若 .env 里的 Cookie 仍有效，重启应用后再拉取会自动注入。）"
+                    )
+            except Exception:
+                pass
+            self.emit("error", _ready_error(res) + hint)
             return
 
         self.log(
@@ -981,10 +1002,12 @@ class BrowserLoginWorker(threading.Thread):
         profile_dir = None
         ready_status = ""
         url = ""
+        cookies_text = ""
         if isinstance(payload, dict):
             profile_dir = payload.get("profile_dir")
             ready_status = str(payload.get("ready_status") or "")
             url = str(payload.get("url") or "")
+            cookies_text = str(payload.get("cookies") or "")
         elif payload:
             profile_dir = payload
 
@@ -1062,6 +1085,20 @@ class BrowserLoginWorker(threading.Thread):
 
         pages = [p for p in self.ctx.pages if not p.is_closed()]
         self.page = pages[0] if pages else self.ctx.new_page()
+
+        # 拉会话/导出这类无人值守流程：把 .env 里该账号的最新 Cookie 注入
+        # 持久化配置目录。同一账号反复在任务的新上下文里登录，抖音会把
+        # 配置目录里的旧会话踢下线 —— 只靠目录内登录态，拉列表必然撞登录墙。
+        if cookies_text:
+            try:
+                cookies = json.loads(cookies_text)
+                if isinstance(cookies, list) and cookies:
+                    for cookie in cookies:
+                        cookie.pop("sameSite", None)
+                    self.ctx.add_cookies(cookies)
+                    self.log(f"已注入 {len(cookies)} 项 Cookie（来自 .env 的最新登录态）")
+            except Exception as exc:
+                self.log(f"Cookie 注入失败（用配置目录已有登录态继续）：{type(exc).__name__}: {exc}")
 
         # 下面两个钩子都必须在 goto 之前挂好（这是 core/douyin_im 的约定）：
         #   ImMonitor           登录态就写在聊天页首屏的 SSR HTML 里，挂晚了就漏，

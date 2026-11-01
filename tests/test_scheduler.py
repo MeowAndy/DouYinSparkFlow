@@ -169,7 +169,55 @@ class WindowsBackendTests(PathsTestCase):
         self.assertEqual(args[:5], ["schtasks", "/Create", "/F", "/TN", "X"])
         self.assertIn("DAILY", args)
         self.assertIn("09:30", args)
+        # 默认形式不带 /RU：普通用户权限下兼容性最好
+        self.assertNotIn("/RU", args)
         self.assertTrue(any("wscript.exe" in a for a in args))
+
+    def test_build_scheduled_command_limited(self):
+        backend = WindowsBackend()
+        args = backend.build_scheduled_command(
+            name="X", run_time="09:30", vbs=r"C:\r\run_task.vbs", limited=True
+        )
+        self.assertIn("/RL", args)
+        self.assertIn("LIMITED", args)
+        self.assertIn("/IT", args)
+
+    def test_scheduled_install_falls_back_and_reports(self):
+        """第一条 schtasks 失败时降级到下一条；全部失败时错误带诊断。"""
+        calls = []
+        registered = {"limited": False}
+
+        def runner(args):
+            calls.append(args)
+            if "/Query" in args:
+                return FakeResult(0 if registered["limited"] else 1, stdout="OK" if registered["limited"] else "")
+            if "/Delete" in args:
+                return FakeResult(1)
+            if args[0] == "powershell":
+                return FakeResult(1, stdout="PS失败")
+            if "/RL" in args:
+                registered["limited"] = True  # 第二条成功
+                return FakeResult(0)
+            return FakeResult(1, stderr="错误: 拒绝访问。")
+
+        backend = WindowsBackend(runner=runner)
+        backend.install(name="X", mode="scheduled", run_time="09:00", launcher=self._launcher())
+        # 第一条失败 → 第二条 limited 成功，不需要第三条
+        self.assertEqual(len(calls), 3)  # create(denied) → create(limited) → verify(query)
+        self.assertTrue(backend.status(name="X", mode="scheduled")["installed"])
+
+    def test_scheduled_install_all_fail_raises_with_diagnostics(self):
+        def runner(args):
+            return FakeResult(1, stderr="错误: 拒绝访问。")
+
+        backend = WindowsBackend(runner=runner)
+        with self.assertRaises(RuntimeError) as ctx:
+            backend.install(name="X", mode="scheduled", run_time="09:00", launcher=self._launcher())
+        message = str(ctx.exception)
+        self.assertIn("schtasks", message)
+        self.assertIn("powershell", message)
+        self.assertIn("拒绝访问", message)
+        self.assertIn("开机执行", message)
 
     def test_scheduled_install_writes_vbs_and_registers(self):
         calls = []

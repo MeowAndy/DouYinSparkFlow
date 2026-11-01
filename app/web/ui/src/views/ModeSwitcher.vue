@@ -47,7 +47,7 @@
 <script setup>
 import { computed, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { py } from '../api'
+import { applyModeWithElevation, py } from '../api'
 import TunnelModal from './TunnelModal.vue'
 
 const props = defineProps({
@@ -104,10 +104,23 @@ function onCommand(mode) {
 async function applyMode(mode, proxy) {
   applying.value = true
   try {
-    const res = await py('schedule_set_mode', proxy ? { mode, proxy } : { mode })
     const label = modes.find((m) => m.id === mode)?.label || mode
+    let schedule
+    if (proxy) {
+      const res = await py('schedule_set_mode', { mode, proxy })
+      schedule = res.schedule
+    } else {
+      // 普通注册被系统拒绝（权限）时，引导用户 UAC 提权重试
+      const res = await applyModeWithElevation(mode)
+      if (!res.ok) {
+        if (!res.cancelled && res.message) ElMessage({ type: 'error', message: res.message })
+        return false
+      }
+      schedule = res.schedule
+      if (res.elevated) ElMessage({ type: 'success', message: '已用管理员权限完成注册' })
+    }
     ElMessage({ type: 'success', message: `已切换到「${label}」` })
-    emit('changed', res.schedule)
+    emit('changed', schedule)
     return true
   } catch (e) {
     ElMessage({ type: 'error', message: String(e.message || e) })

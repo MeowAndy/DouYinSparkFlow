@@ -1,5 +1,13 @@
 <template>
   <div class="summary-page">
+    <div class="welcome-row">
+      <div>
+        <p class="eyebrow">LOCAL CONTROL CENTER</p>
+        <h1>今天的火花状态</h1>
+        <p class="welcome-sub">配置、登录和执行状态都在这里快速确认。</p>
+      </div>
+      <div class="welcome-mark">✦</div>
+    </div>
     <div class="status-card">
       <div class="status-row">
         <span class="status-key">保存状态</span>
@@ -53,6 +61,20 @@
       </div>
     </div>
 
+    <div class="manual-run-card" :class="{ running: manualRun?.running }">
+      <div>
+        <p class="manual-kicker">MANUAL RUN</p>
+        <h2>{{ manualRun?.running ? '任务正在执行' : '立即执行一轮任务' }}</h2>
+        <p>{{ manualRun?.running ? '任务在独立进程中运行，日志会写入执行日志页面。' : '保存当前配置后，立即按现有账号和目标执行一次。' }}</p>
+      </div>
+      <div class="manual-actions">
+        <button v-if="!manualRun?.running" class="action-btn primary" :disabled="status.issueClass === 'err'" @click="runNow">▶ 立即执行</button>
+        <button v-else class="action-btn secondary danger" @click="cancelRun">停止任务</button>
+        <span v-if="manualRun?.running" class="run-dot">运行中</span>
+        <span v-else-if="manualRun?.exit_code !== null" class="run-result">上次退出码 {{ manualRun.exit_code }}</span>
+      </div>
+    </div>
+
     <div class="toolbar">
       <button class="tbtn" @click="copy">复制 .env 内容</button>
       <button class="tbtn" @click="open">打开程序目录</button>
@@ -94,8 +116,9 @@ const props = defineProps({
   data: { type: Object, required: true },
   status: { type: Object, default: () => ({}) },
   schedule: { type: Object, default: () => ({}) },
+  manualRun: { type: Object, default: () => ({ running: false, exit_code: null }) },
 })
-const emit = defineEmits(['clean', 'copy', 'open', 'cancel', 'reregister'])
+const emit = defineEmits(['clean', 'copy', 'open', 'cancel', 'reregister', 'run-now', 'cancel-run'])
 const filter = ref('')
 
 const showExecPanel = computed(
@@ -114,6 +137,9 @@ const filtered = computed(() => {
 
 function copy() { emit('copy') }
 function open() { emit('open') }
+
+function runNow() { emit('run-now', () => {}) }
+function cancelRun() { emit('cancel-run') }
 
 function runText(entry) {
   if (!entry) return '未执行'
@@ -141,7 +167,70 @@ function clean() {
 </script>
 
 <style scoped>
-.summary-page { width: 100%; }
+.summary-page { width: 100%; max-width: 1080px; margin: 0 auto; }
+
+.welcome-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 4px 2px 20px;
+}
+
+.eyebrow {
+  margin-bottom: 6px;
+  color: var(--vg-fg-4);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: .16em;
+}
+
+.welcome-row h1 {
+  color: var(--vg-fg);
+  font-size: 25px;
+  font-weight: 650;
+  letter-spacing: -.04em;
+  line-height: 1.2;
+}
+
+.welcome-sub { margin-top: 6px; color: var(--vg-fg-3); font-size: 13px; }
+
+.welcome-mark {
+  display: grid;
+  place-items: center;
+  width: 58px;
+  height: 58px;
+  border-radius: 18px;
+  background: var(--vg-fg);
+  color: #fff;
+  font-size: 25px;
+  box-shadow: 0 8px 20px rgba(0,0,0,.12);
+}
+
+.manual-run-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 18px 20px;
+  margin-bottom: 16px;
+  border-radius: var(--vg-radius);
+  background: #f6f8ff;
+  box-shadow: 0 0 0 1px #dfe6ff;
+}
+.manual-run-card.running { background: #fff8ed; box-shadow: 0 0 0 1px #f5dfb0; }
+.manual-kicker { margin-bottom: 4px; color: var(--vg-accent); font-size: 10px; font-weight: 650; letter-spacing: .14em; }
+.manual-run-card h2 { color: var(--vg-fg); font-size: 15px; font-weight: 650; }
+.manual-run-card p { color: var(--vg-fg-3); font-size: 12px; }
+.manual-actions { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
+.action-btn.primary, .action-btn.secondary { padding: 8px 14px; border-radius: var(--vg-radius-sm); border: none; cursor: pointer; font-size: 12.5px; font-weight: 600; }
+.action-btn.primary { background: var(--vg-fg); color: #fff; }
+.action-btn.primary:disabled { opacity: .4; cursor: not-allowed; }
+.action-btn.secondary { background: #fff; color: var(--vg-fg); box-shadow: var(--vg-ring); }
+.action-btn.secondary.danger { color: #b91c1c; }
+.run-dot { color: #b45309; font-size: 12px; }
+.run-dot::before { content: '●'; margin-right: 5px; }
+.run-result { color: var(--vg-fg-3); font-size: 11px; white-space: nowrap; }
 
 /* 实时状态 */
 .status-card {

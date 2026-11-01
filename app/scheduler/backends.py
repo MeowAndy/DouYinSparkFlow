@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import locale
 import os
 import shlex
 import shutil
@@ -21,10 +22,19 @@ from app.util import no_window_kwargs
 
 
 def _default_run(args, input_text=None):
+    # Windows 下固定调用原生 schtasks.exe，避免 Git Bash 的同名包装器
+    # 把参数错误解析成“拒绝访问/无效参数”。中文系统输出使用本地编码解码。
+    command = list(args)
+    if os.name == "nt" and command and command[0].lower() == "schtasks":
+        system_root = os.environ.get("SystemRoot", r"C:\\Windows")
+        command[0] = str(Path(system_root) / "System32" / "schtasks.exe")
+    encoding = locale.getpreferredencoding(False) if os.name == "nt" else None
     return subprocess.run(
-        args,
+        command,
         capture_output=True,
         text=True,
+        encoding=encoding,
+        errors="replace",
         input=input_text,
         **no_window_kwargs(),
     )
@@ -87,33 +97,101 @@ class WindowsBackend(Backend):
         return paths.SCHEDULER_DIR / "run_task.vbs"
 
     # -- 命令（纯函数，便于单测） ----------------------------------------
-    def build_scheduled_command(self, *, name: str, run_time: str, vbs) -> list:
-        return [
+    def build_scheduled_command(self, *, name: str, run_time: str, vbs, limited: bool = False) -> list:
+        """schtasks 注册命令。
+
+        limited=False：最基础的写法（不指定 /RU），任务归当前用户、仅登录时运行
+        —— 这是普通用户权限下兼容性最好的形式，在部分系统上指定 /RU 反而
+        会因“需要密码却无法交互输入”而报拒绝访问。
+
+        limited=True：显式声明当前用户 + 最低权限 + 交互令牌，给部分
+        对默认行为有限制的系统用。
+        """
+        command = [
             "schtasks", "/Create", "/F",
             "/TN", name,
             "/TR", f'wscript.exe "{vbs}"',
             "/SC", "DAILY", "/ST", run_time,
         ]
+        if limited:
+            command.extend(["/RL", "LIMITED", "/IT"])
+            username = os.environ.get("USERNAME", "").strip()
+            if username:
+                command.extend(["/RU", username])
+        return command
+
+    def _ps_register_script(self, *, name: str, run_time: str, vbs) -> Path:
+        """生成 PowerShell 注册脚本：schtasks 被策略拦截时的第三条路。
+
+        Register-ScheduledTask 用当前用户 + Interactive + Limited 权限，
+        与 schtasks 的用户级任务等价，同样不需要管理员。
+        """
+        def ps_quote(text: str) -> str:
+            return "'" + str(text).replace("'", "''") + "'"
+
+        script = self.task_vbs().with_name("register_task.ps1")
+        content = "\n".join([
+            "$ErrorActionPreference = 'Stop'",
+            f"$action = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument {ps_quote(f'\"{vbs}\"')}",
+            f"$trigger = New-ScheduledTaskTrigger -Daily -At {ps_quote(run_time)}",
+            "$user = \"$env:USERDOMAIN\\$env:USERNAME\"",
+            "$principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited",
+            "$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries",
+            f"Register-ScheduledTask -TaskName {ps_quote(name)} -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null",
+            "Write-Output 'OK'",
+        ]) + "\n"
+        core._write_text(script, content)
+        return script
 
     # -- 安装 / 卸载 / 状态 ----------------------------------------------
     def install(self, *, name: str, mode: str, run_time: str, launcher) -> None:
-        if mode == "scheduled":
-            # 定点执行：走 run-if-due --force —— 每次都跑，同时记录执行历史
-            vbs = core.write_vbs(
-                launcher, self.task_vbs(), launcher.scheduler_argv("run-if-due", "--force")
-            )
-            result = self._run(
-                self.build_scheduled_command(name=name, run_time=run_time, vbs=vbs)
-            )
-            if result.returncode != 0:
-                raise RuntimeError(
-                    f"注册计划任务失败（{name}）："
-                    f"{(result.stderr or result.stdout or '').strip()}"
-                )
-        elif mode == "boot":
-            core.write_vbs(launcher, self.boot_vbs(name), launcher.scheduler_argv("run-if-due"))
-        else:
+        if mode != "scheduled":
+            if mode == "boot":
+                core.write_vbs(launcher, self.boot_vbs(name), launcher.scheduler_argv("run-if-due"))
+                return
             raise ValueError(f"Windows 后端不支持的模式：{mode!r}")
+
+        # 定点执行：走 run-if-due --force —— 每次都跑，同时记录执行历史
+        vbs = core.write_vbs(
+            launcher, self.task_vbs(), launcher.scheduler_argv("run-if-due", "--force")
+        )
+
+        # 三级降级链：任何一级注册成功且查询到任务即认为成功。
+        failures: list = []
+        attempts = [
+            ("schtasks", self.build_scheduled_command(name=name, run_time=run_time, vbs=vbs)),
+            ("schtasks-limited", self.build_scheduled_command(name=name, run_time=run_time, vbs=vbs, limited=True)),
+        ]
+        try:
+            script = self._ps_register_script(name=name, run_time=run_time, vbs=vbs)
+            attempts.append((
+                "powershell",
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)],
+            ))
+        except OSError:
+            pass  # 无法写脚本文件时跳过 PowerShell 这条路
+
+        for label, args in attempts:
+            try:
+                result = self._run(args)
+            except OSError as exc:
+                failures.append(f"{label}: 无法启动进程 {type(exc).__name__}: {exc}")
+                continue
+            if result.returncode != 0:
+                detail = (result.stderr or result.stdout or "").strip() or f"退出码 {result.returncode}"
+                failures.append(f"{label}: {detail}")
+                continue
+            # 注册命令返回 0 不代表任务可查（个别策略环境会静默失败），复核一次
+            if self.status(name=name, mode="scheduled").get("installed"):
+                return
+            failures.append(f"{label}: 命令成功但查询不到任务")
+
+        hint = (
+            "已尝试 schtasks（默认）、schtasks（当前用户+最低权限）、PowerShell 三种方式均失败。"
+            "常见原因：① 当前账户被策略禁止创建计划任务；② 安全软件拦截；③ Task Scheduler 服务被停用。"
+            "可先改用「开机执行」模式（不依赖 schtasks），或用管理员运行一次本程序完成注册。"
+        )
+        raise RuntimeError(f"注册计划任务失败（{name}）：{hint} 各方式返回：{'；'.join(failures)}")
 
     def uninstall(self, *, name: str) -> bool:
         result = self._run(["schtasks", "/Delete", "/TN", name, "/F"])

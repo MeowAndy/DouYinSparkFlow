@@ -134,10 +134,13 @@ BROWSER_EXE_NAMES = ("chrome.exe", "chrome")
 
 
 def browser_dir() -> Path:
-    """自带的 Chromium 目录。
+    """解析 Chromium 目录：环境变量 > 随包资源 > CloakBrowser 用户缓存。"""
+    override = os.environ.get("CLOAKBROWSER_BINARY_PATH", "").strip()
+    if override:
+        path = Path(override).expanduser()
+        if path.is_file():
+            return path.parent
 
-    找不到时也返回一个预期路径，方便把「缺浏览器」这件事说清楚。
-    """
     candidates = [
         resource_dir() / BROWSER_DIR_NAME,
         BUNDLE_DIR / BROWSER_DIR_NAME,
@@ -146,11 +149,22 @@ def browser_dir() -> Path:
     for candidate in candidates:
         if util.find_binary(BROWSER_EXE_NAMES, [candidate]):
             return candidate
+
+    # 源码运行时复用 `python -m cloakbrowser install` 的用户缓存，
+    # 这样 Windows 一键启动不要求把 500MB 浏览器复制进仓库。
+    cache = Path(os.environ.get("CLOAKBROWSER_CACHE_DIR", Path.home() / ".cloakbrowser"))
+    if cache.is_dir():
+        cached = sorted(cache.glob("chromium-*/chrome.exe"), reverse=True)
+        if cached:
+            return cached[0].parent
     return candidates[0]
 
 
 def browser_binary() -> Path:
     """自带的 Chromium 可执行文件路径。"""
+    override = os.environ.get("CLOAKBROWSER_BINARY_PATH", "").strip()
+    if override and Path(override).expanduser().is_file():
+        return Path(override).expanduser()
     directory = browser_dir()
     found = util.find_binary(BROWSER_EXE_NAMES, [directory])
     return found if found else directory / BROWSER_EXE_NAMES[0]

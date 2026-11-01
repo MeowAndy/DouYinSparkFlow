@@ -1,6 +1,11 @@
 <template>
   <div class="accounts-page">
-    <div class="page-head">
+    <div class="page-intro">
+      <div>
+        <p class="eyebrow">IDENTITIES & TARGETS</p>
+        <h1>账号与好友</h1>
+        <p class="intro-sub">登录状态、持久化浏览器和续火目标统一管理。</p>
+      </div>
       <button class="add-btn" :disabled="running" @click="startAdd">
         ＋ 添加账号
       </button>
@@ -203,7 +208,26 @@ function onConversationsSaved(_payload) {
 </script>
 
 <style scoped>
-.accounts-page { width: 100%; }
+.accounts-page { width: 100%; max-width: 1080px; margin: 0 auto; }
+
+.page-intro {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 4px 2px 20px;
+}
+
+.eyebrow {
+  margin-bottom: 6px;
+  color: var(--vg-fg-4);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: .16em;
+}
+
+.page-intro h1 { color: var(--vg-fg); font-size: 25px; font-weight: 650; letter-spacing: -.04em; line-height: 1.2; }
+.intro-sub { margin-top: 6px; color: var(--vg-fg-3); font-size: 13px; }
 
 .page-head {
   display: flex;
