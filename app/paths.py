@@ -92,7 +92,11 @@ def project_root() -> Path:
 ROOT_DIR = project_root()
 
 # 主程序读的那份配置（见 project_root 的说明）
-ENV_FILE = ROOT_DIR / ".env"
+# Docker 里两个容器共享宿主机的 config/ 目录时，用 APP_ENV_FILE 指到挂载路径：
+# 按目录挂载 + 原子替换才能让「Web 控制台保存配置」立即被任务容器看到
+# （单文件挂载会把 inode 钉死，宿主机替换文件后容器里看到的还是旧内容）。
+_env_override = os.environ.get("APP_ENV_FILE", "").strip()
+ENV_FILE = Path(_env_override) if _env_override else ROOT_DIR / ".env"
 
 # 以下都是本工具自己的元数据，一律写在程序旁边，不依赖项目仓库结构
 PROFILE_ROOT = APP_DIR / "profiles"

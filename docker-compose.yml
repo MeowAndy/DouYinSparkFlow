@@ -28,7 +28,32 @@ services:
       - ${LOGS_DIR:-./logs}:/app/logs
 
   # ===========================================================================
-  # ② 配套代理：给本地 app 提供与任务容器一致的出口
+  # ② Web 控制台：浏览器直接打开 http://服务器IP:9000 管理配置/执行/日志
+  #    （与桌面版同一套 UI 和方法表；账号密码见下方 WEBUI_USER / WEBUI_PASSWORD）
+  # ===========================================================================
+  douyin-spark-webui:
+    image: crpi-yagm0mg4gyj902wq.cn-hangzhou.personal.cr.aliyuncs.com/oilu/douyinsparkflow:latest
+    container_name: douyin-spark-webui
+    restart: unless-stopped
+    # 同一个镜像，换个启动命令：跑 Web 控制台而不是容器内 cron
+    entrypoint: []
+    command: ["python", "-m", "app.webui_server"]
+    environment:
+      WEBUI_USER: ${WEBUI_USER:-douyin}
+      WEBUI_PASSWORD: ${WEBUI_PASSWORD:?请在 .env 或环境变量里设置 WEBUI_PASSWORD}
+      PYTHONUNBUFFERED: "1"
+    ports:
+      - "${WEBUI_PORT:-9000}:9000"
+    volumes:
+      # 与任务容器共用同一份 .env：Web 控制台保存后任务容器立刻可见
+      - ${CONFIG_ENV_FILE:-./config/.env}:/app/.env
+      - ./webui_server.py:/app/app/webui_server.py:ro
+      - ./web-dist:/app/app/web/dist:ro
+      - ${LOGS_DIR:-./logs}:/app/logs
+      - ./profiles:/app/profiles
+
+  # ===========================================================================
+  # ③ 配套代理：给本地 app 提供与任务容器一致的出口（隧道抓 Cookie 用）
   # ===========================================================================
   gost:
     image: crpi-yagm0mg4gyj902wq.cn-hangzhou.personal.cr.aliyuncs.com/oilu/gost:latest
@@ -44,5 +69,5 @@ services:
       #   明文 ws 暴露在公网，密码务必设成足够长的随机串。
       - "http+ws://yourGostUser:yourGostPassword@:9000?path=/ws"
     ports:
-      # 暴露给本地 app 连；宿主机 9000 被占就改左边的端口
-      - "${GOST_PORT:-9000}:9000"
+      # 暴露给本地 app 连；宿主机 9000 让给了 Web 控制台，隧道默认改走 9001
+      - "${GOST_PORT:-9001}:9000"

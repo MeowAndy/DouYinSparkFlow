@@ -6,12 +6,13 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+import errno
 import os
 import stat
 import tempfile
 import threading
 import time
+from pathlib import Path
 
 from dotenv import dotenv_values
 from dotenv.parser import parse_stream
@@ -84,6 +85,17 @@ def _write_updates(target: Path, updates: dict, remove=()) -> int:
                     if os.name != "nt" or getattr(exc, "winerror", None) not in (5, 32, 33) or attempt == 6:
                         raise
                     time.sleep(min(0.05 * 2 ** attempt, 0.5))
+                except OSError as exc:
+                    # 目标被跨容器单文件挂载（Docker bind mount）钉住 inode 时，
+                    # os.replace 必然 EBUSY —— 退回就地写同一 inode，
+                    # 挂载它的其他容器（任务容器）才能立刻看到新内容。
+                    if getattr(exc, "errno", None) not in (errno.EBUSY, errno.EPERM, errno.EACCES):
+                        raise
+                    with open(target, "w", encoding="utf-8", newline="\n") as stream:
+                        stream.write(content)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    break
         finally:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
